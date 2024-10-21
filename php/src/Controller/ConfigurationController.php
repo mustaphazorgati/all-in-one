@@ -9,14 +9,10 @@ use AIO\Docker\DockerActionManager;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 
-class ConfigurationController
-{
-    private ConfigurationManager $configurationManager;
-
+readonly class ConfigurationController {
     public function __construct(
-        ConfigurationManager $configurationManager
+        private ConfigurationManager $configurationManager
     ) {
-        $this->configurationManager = $configurationManager;
     }
 
     public function SetConfig(Request $request, Response $response, array $args) : Response {
@@ -49,8 +45,13 @@ class ConfigurationController
                 } else {
                     $enableAutomaticUpdates = false;
                 }
+                if (isset($request->getParsedBody()['success_notification'])) {
+                    $successNotification = true;
+                } else {
+                    $successNotification = false;
+                }
                 $dailyBackupTime = $request->getParsedBody()['daily_backup_time'] ?? '';
-                $this->configurationManager->SetDailyBackupTime($dailyBackupTime, $enableAutomaticUpdates);
+                $this->configurationManager->SetDailyBackupTime($dailyBackupTime, $enableAutomaticUpdates, $successNotification);
             }
 
             if (isset($request->getParsedBody()['delete_daily_backup_time'])) {
@@ -95,6 +96,11 @@ class ConfigurationController
                 } else {
                     $this->configurationManager->SetTalkEnabledState(0);
                 }
+                if (isset($request->getParsedBody()['talk-recording'])) {
+                    $this->configurationManager->SetTalkRecordingEnabledState(1);
+                } else {
+                    $this->configurationManager->SetTalkRecordingEnabledState(0);
+                }
                 if (isset($request->getParsedBody()['imaginary'])) {
                     $this->configurationManager->SetImaginaryEnabledState(1);
                 } else {
@@ -105,6 +111,16 @@ class ConfigurationController
                 } else {
                     $this->configurationManager->SetFulltextsearchEnabledState(0);
                 }
+                if (isset($request->getParsedBody()['docker-socket-proxy'])) {
+                    $this->configurationManager->SetDockerSocketProxyEnabledState(1);
+                } else {
+                    $this->configurationManager->SetDockerSocketProxyEnabledState(0);
+                }
+                if (isset($request->getParsedBody()['whiteboard'])) {
+                    $this->configurationManager->SetWhiteboardEnabledState(1);
+                } else {
+                    $this->configurationManager->SetWhiteboardEnabledState(0);
+                }
             }
 
             if (isset($request->getParsedBody()['delete_collabora_dictionaries'])) {
@@ -114,6 +130,10 @@ class ConfigurationController
             if (isset($request->getParsedBody()['collabora_dictionaries'])) {
                 $collaboraDictionaries = $request->getParsedBody()['collabora_dictionaries'] ?? '';
                 $this->configurationManager->SetCollaboraDictionaries($collaboraDictionaries);
+            }
+
+            if (isset($request->getParsedBody()['delete_borg_backup_host_location'])) {
+                $this->configurationManager->DeleteBorgBackupHostLocation();
             }
 
             return $response->withStatus(201)->withHeader('Location', '/');

@@ -7,6 +7,9 @@ ini_set('memory_limit', '2048M');
 // set max execution time to 2h just in case of a very slow internet connection
 ini_set('max_execution_time', '7200');
 
+// Log whole log messages
+ini_set('log_errors_max_len', '0');
+
 use DI\Container;
 use Slim\Csrf\Guard;
 use Slim\Factory\AppFactory;
@@ -70,15 +73,18 @@ $app->post('/api/configuration', \AIO\Controller\ConfigurationController::class 
 // Views
 $app->get('/containers', function (Request $request, Response $response, array $args) use ($container) {
     $view = Twig::fromRequest($request);
+    $view->addExtension(new \AIO\Twig\ClassExtension());
     /** @var \AIO\Data\ConfigurationManager $configurationManager */
     $configurationManager = $container->get(\AIO\Data\ConfigurationManager::class);
+    /** @var \AIO\Docker\DockerActionManager $dockerActionManger */
     $dockerActionManger = $container->get(\AIO\Docker\DockerActionManager::class);
-    $dockerActionManger->ConnectMasterContainerToNetwork();
+    /** @var \AIO\Controller\DockerController $dockerController */
     $dockerController = $container->get(\AIO\Controller\DockerController::class);
+    $dockerActionManger->ConnectMasterContainerToNetwork();
     $dockerController->StartDomaincheckContainer();
-    $view->addExtension(new \AIO\Twig\ClassExtension());
     return $view->render($response, 'containers.twig', [
         'domain' => $configurationManager->GetDomain(),
+        'apache_port' => $configurationManager->GetApachePort(),
         'borg_backup_host_location' => $configurationManager->GetBorgBackupHostLocation(),
         'nextcloud_password' => $configurationManager->GetAndGenerateSecret('NEXTCLOUD_PASSWORD'),
         'containers' => (new \AIO\ContainerDefinitionFetcher($container->get(\AIO\Data\ConfigurationManager::class), $container))->FetchDefinition(),
@@ -111,6 +117,15 @@ $app->get('/containers', function (Request $request, Response $response, array $
         'is_imaginary_enabled' => $configurationManager->isImaginaryEnabled(),
         'is_fulltextsearch_enabled' => $configurationManager->isFulltextsearchEnabled(),
         'additional_backup_directories' => $configurationManager->GetAdditionalBackupDirectoriesString(),
+        'nextcloud_datadir' => $configurationManager->GetNextcloudDatadirMount(),
+        'nextcloud_mount' => $configurationManager->GetNextcloudMount(),
+        'nextcloud_upload_limit' => $configurationManager->GetNextcloudUploadLimit(),
+        'nextcloud_max_time' => $configurationManager->GetNextcloudMaxTime(),
+        'nextcloud_memory_limit' => $configurationManager->GetNextcloudMemoryLimit(),
+        'is_dri_device_enabled' => $configurationManager->isDriDeviceEnabled(),
+        'is_talk_recording_enabled' => $configurationManager->isTalkRecordingEnabled(),
+        'is_docker_socket_proxy_enabled' => $configurationManager->isDockerSocketProxyEnabled(),
+        'is_whiteboard_enabled' => $configurationManager->isWhiteboardEnabled(),        
     ]);
 })->setName('profile');
 $app->get('/login', function (Request $request, Response $response, array $args) use ($container) {
@@ -144,6 +159,7 @@ $app->get('/setup', function (Request $request, Response $response, array $args)
 
 // Auth Redirector
 $app->get('/', function (\Psr\Http\Message\RequestInterface $request, Response $response, array $args) use ($container) {
+    /** @var \AIO\Auth\AuthManager $authManager */
     $authManager = $container->get(\AIO\Auth\AuthManager::class);
 
     /** @var \AIO\Data\Setup $setup */
@@ -165,6 +181,6 @@ $app->get('/', function (\Psr\Http\Message\RequestInterface $request, Response $
     }
 });
 
-$errorMiddleware = $app->addErrorMiddleware(true, true, true);
+$errorMiddleware = $app->addErrorMiddleware(false, true, true);
 
 $app->run();

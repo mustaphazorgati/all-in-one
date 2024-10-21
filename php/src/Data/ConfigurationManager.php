@@ -12,7 +12,7 @@ class ConfigurationManager
         if(file_exists(DataConst::GetConfigFile()))
         {
             $configContent = file_get_contents(DataConst::GetConfigFile());
-            return json_decode($configContent, true);
+            return json_decode($configContent, true, 512, JSON_THROW_ON_ERROR);
         }
 
         return [];
@@ -78,7 +78,10 @@ class ConfigurationManager
         }
 
         $lastBackupLines = explode("\n", $content);
-        $lastBackupLine = $lastBackupLines[sizeof($lastBackupLines) - 2];
+        $lastBackupLine = "";
+        if (count($lastBackupLines) >= 2) {
+            $lastBackupLine = $lastBackupLines[sizeof($lastBackupLines) - 2];
+        }
         if ($lastBackupLine === "") {
             return '';
         }
@@ -146,6 +149,36 @@ class ConfigurationManager
         }
     }
 
+    public function isDockerSocketProxyEnabled() : bool {
+        $config = $this->GetConfig();
+        if (isset($config['isDockerSocketProxyEnabled']) && $config['isDockerSocketProxyEnabled'] === 1) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    public function SetDockerSocketProxyEnabledState(int $value) : void {
+        $config = $this->GetConfig();
+        $config['isDockerSocketProxyEnabled'] = $value;
+        $this->WriteConfig($config);
+    }
+
+    public function isWhiteboardEnabled() : bool {
+        $config = $this->GetConfig();
+        if (isset($config['isWhiteboardEnabled']) && $config['isWhiteboardEnabled'] === 1) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    public function SetWhiteboardEnabledState(int $value) : void {
+        $config = $this->GetConfig();
+        $config['isWhiteboardEnabled'] = $value;
+        $this->WriteConfig($config);
+    }
+
     public function SetClamavEnabledState(int $value) : void {
         $config = $this->GetConfig();
         $config['isClamavEnabled'] = $value;
@@ -154,10 +187,10 @@ class ConfigurationManager
 
     public function isImaginaryEnabled() : bool {
         $config = $this->GetConfig();
-        if (isset($config['isImaginaryEnabled']) && $config['isImaginaryEnabled'] === 1) {
-            return true;
-        } else {
+        if (isset($config['isImaginaryEnabled']) && $config['isImaginaryEnabled'] === 0) {
             return false;
+        } else {
+            return true;
         }
     }
 
@@ -227,12 +260,48 @@ class ConfigurationManager
         $this->WriteConfig($config);
     }
 
+    public function isTalkRecordingEnabled() : bool {
+        if (!$this->isTalkEnabled()) {
+            return false;
+        }
+        $config = $this->GetConfig();
+        if (isset($config['isTalkRecordingEnabled']) && $config['isTalkRecordingEnabled'] === 1) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    public function SetTalkRecordingEnabledState(int $value) : void {
+        if (!$this->isTalkEnabled()) {
+            $value = 0;
+        }
+        $config = $this->GetConfig();
+        $config['isTalkRecordingEnabled'] = $value;
+        $this->WriteConfig($config);
+    }
+
     /**
      * @throws InvalidSettingConfigurationException
      */
     public function SetDomain(string $domain) : void {
+        // Validate that at least one dot is contained
+        if (!str_contains($domain, '.')) {
+            throw new InvalidSettingConfigurationException("Domain must contain at least one dot!");
+        }
+
+        // Validate that no slashes are contained
+        if (str_contains($domain, '/')) {
+            throw new InvalidSettingConfigurationException("Domain must not contain slashes!");
+        }
+
+        // Validate that no colons are contained
+        if (str_contains($domain, ':')) {
+            throw new InvalidSettingConfigurationException("Domain must not contain colons!");
+        }
+
         // Validate domain
-        if (!filter_var($domain, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME)) {
+        if (filter_var($domain, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
             throw new InvalidSettingConfigurationException("Domain is not a valid domain!");
         }
 
@@ -251,7 +320,7 @@ class ConfigurationManager
 
             if (empty($dnsRecordIP)) {
                 $record = dns_get_record($domain, DNS_AAAA);
-                if (!empty($record)) {
+                if (isset($record[0]['ipv6']) && !empty($record[0]['ipv6'])) {
                     $dnsRecordIP = $record[0]['ipv6'];
                 }
             }
@@ -265,11 +334,10 @@ class ConfigurationManager
             $port = $this->GetApachePort();
 
             if (!filter_var($dnsRecordIP, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-                $errorMessage = "It seems like the ip-address is set to an internal or reserved ip-address. This is not supported. (It was found to be set to '" . $dnsRecordIP . "')";
                 if ($port === '443') {
-                    throw new InvalidSettingConfigurationException($errorMessage);
+                    throw new InvalidSettingConfigurationException("It seems like the ip-address of the domain is set to an internal or reserved ip-address. This is not supported. (It was found to be set to '" . $dnsRecordIP . "'). Please set it to a public ip-address so that the domain validation can work!");
                 } else {
-                    error_log($errorMessage);
+                    error_log("It seems like the ip-address of " . $domain . " is set to an internal or reserved ip-address. (It was found to be set to '" . $dnsRecordIP . "')");
                 }
             }
 
@@ -278,7 +346,7 @@ class ConfigurationManager
             if ($connection) {
                 fclose($connection);
             } else {
-                throw new InvalidSettingConfigurationException("The server is not reachable on Port 443. You can verify this e.g. with 'https://portchecker.co/' by entering your domain there as ip-address and port 443 as port.");
+                throw new InvalidSettingConfigurationException("The domain is not reachable on Port 443 from within this container. Have you opened port 443/tcp in your router/firewall? If yes is the problem most likely that the router or firewall forbids local access to your domain. You can work around that by setting up a local DNS-server.");
             }
 
             // Get Instance ID
@@ -296,6 +364,8 @@ class ConfigurationManager
             $testUrl = $protocol . $domain . ':443';
             curl_setopt($ch, CURLOPT_URL, $testUrl);
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10); 
+            curl_setopt($ch, CURLOPT_TIMEOUT, 10);
             $response = (string)curl_exec($ch);
             # Get rid of trailing \n
             $response = str_replace("\n", "", $response);
@@ -304,7 +374,13 @@ class ConfigurationManager
                 error_log('The response of the connection attempt to "' . $testUrl . '" was: ' . $response);
                 error_log('Expected was: ' . $instanceID);
                 error_log('The error message was: ' . curl_error($ch));
-                throw new InvalidSettingConfigurationException("Domain does not point to this server or the reverse proxy is not configured correctly. See the mastercontainer logs for more details. ('sudo docker logs -f nextcloud-aio-mastercontainer')");
+                $notice = "Domain does not point to this server or the reverse proxy is not configured correctly. See the mastercontainer logs for more details. ('sudo docker logs -f nextcloud-aio-mastercontainer')";
+                if ($port === '443') {
+                    $notice .= " If you should be using Cloudflare, make sure to disable the Cloudflare Proxy feature as it might block the domain validation. Same for any other firewall or service that blocks unencrypted access on port 443.";
+                } else {
+                    error_log('Please follow https://github.com/nextcloud/all-in-one/blob/main/reverse-proxy.md#6-how-to-debug-things in order to debug things!');
+                }
+                throw new InvalidSettingConfigurationException($notice);
             }
         }
 
@@ -323,6 +399,14 @@ class ConfigurationManager
         }
 
         return $config['domain'];
+    }
+
+    public function GetBaseDN() : string {
+        $domain = $this->GetDomain();
+        if ($domain === "") {
+            return "";
+        }
+        return 'dc=' . implode(',dc=', explode('.', $domain));
     }
 
     public function GetBackupMode() : string {
@@ -370,6 +454,12 @@ class ConfigurationManager
 
         $config = $this->GetConfig();
         $config['borg_backup_host_location'] = $location;
+        $this->WriteConfig($config);
+    }
+
+    public function DeleteBorgBackupHostLocation() : void {
+        $config = $this->GetConfig();
+        $config['borg_backup_host_location'] = '';
         $this->WriteConfig($config);
     }
 
@@ -453,7 +543,7 @@ class ConfigurationManager
             throw new InvalidSettingConfigurationException(DataConst::GetDataDirectory() . " does not exist! Something was set up falsely!");
         }
         $df = disk_free_space(DataConst::GetDataDirectory());
-        $content = json_encode($config, JSON_UNESCAPED_SLASHES|JSON_PRETTY_PRINT);
+        $content = json_encode($config, JSON_UNESCAPED_SLASHES|JSON_PRETTY_PRINT|JSON_THROW_ON_ERROR);
         $size = strlen($content) + 10240;
         if ($df !== false && (int)$df < $size) {
             throw new InvalidSettingConfigurationException(DataConst::GetDataDirectory() . " does not have enough space for writing the config file! Not writing it back!");
@@ -562,8 +652,15 @@ class ConfigurationManager
         return $this->GetEnvironmentalVariableOrConfig($envVariableName, $configName, $defaultValue);
     }
 
+    public function GetBorgRetentionPolicy() : string {
+        $envVariableName = 'BORG_RETENTION_POLICY';
+        $configName = 'borg_retention_policy';
+        $defaultValue = '--keep-within=7d --keep-weekly=4 --keep-monthly=6';
+        return $this->GetEnvironmentalVariableOrConfig($envVariableName, $configName, $defaultValue);
+    }
+
     public function GetDockerSocketPath() : string {
-        $envVariableName = 'DOCKER_SOCKET_PATH';
+        $envVariableName = 'WATCHTOWER_DOCKER_SOCKET_PATH';
         $configName = 'docker_socket_path';
         $defaultValue = '/var/run/docker.sock';
         return $this->GetEnvironmentalVariableOrConfig($envVariableName, $configName, $defaultValue);
@@ -608,7 +705,7 @@ class ConfigurationManager
     /**
      * @throws InvalidSettingConfigurationException
      */
-    public function SetDailyBackupTime(string $time, bool $enableAutomaticUpdates) : void {
+    public function SetDailyBackupTime(string $time, bool $enableAutomaticUpdates, bool $successNotification) : void {
         if ($time === "") {
             throw new InvalidSettingConfigurationException("The daily backup time must not be empty!");
         }
@@ -619,6 +716,13 @@ class ConfigurationManager
         
         if ($enableAutomaticUpdates === false) {
             $time .= PHP_EOL . 'automaticUpdatesAreNotEnabled';
+        } else {
+            $time .= PHP_EOL;
+        }
+        if ($successNotification === false) {
+            $time .= PHP_EOL . 'successNotificationsAreNotEnabled';
+        } else {
+            $time .= PHP_EOL;
         }
         file_put_contents(DataConst::GetDailyBackupTimeFile(), $time);
     }
@@ -661,7 +765,7 @@ class ConfigurationManager
             // Trim all unwanted chars on both sites
             $entry = trim($entry);
             if ($entry !== "") {
-                if (!preg_match("#^/[0-1a-zA-Z/-_]+$#", $entry) && !preg_match("#^[0-1a-zA-Z_-]+$#", $entry)) {
+                if (!preg_match("#^/[.0-9a-zA-Z/_-]+$#", $entry) && !preg_match("#^[.0-9a-zA-Z_-]+$#", $entry)) {
                     throw new InvalidSettingConfigurationException("You entered unallowed characters! Problematic is " . $entry);
                 }
                 $validDirectories .= rtrim($entry, '/') . PHP_EOL;
@@ -673,6 +777,14 @@ class ConfigurationManager
         } else {
             file_put_contents(DataConst::GetAdditionalBackupDirectoriesFile(), $validDirectories);
         }
+    }
+
+    public function shouldLatestMajorGetInstalled() : bool {
+        $config = $this->GetConfig();
+        if(!isset($config['install_latest_major'])) {
+            $config['install_latest_major'] = '';
+        }
+        return $config['install_latest_major'] !== '';
     }
 
     public function GetAdditionalBackupDirectoriesString() : string {
@@ -741,7 +853,7 @@ class ConfigurationManager
         if (is_string($apps)) {
             return trim($apps);
         }
-        return 'deck twofactor_totp tasks calendar contacts';
+        return 'deck twofactor_totp tasks calendar contacts notes';
     }
 
     public function GetCollaboraDictionaries() : string {
@@ -784,7 +896,7 @@ class ConfigurationManager
     }
 
     private function GetDisableBackupSection() : string {
-        $envVariableName = 'DISABLE_BACKUP_SECTION';
+        $envVariableName = 'AIO_DISABLE_BACKUP_SECTION';
         $configName = 'disable_backup_section';
         $defaultValue = '';
         return $this->GetEnvironmentalVariableOrConfig($envVariableName, $configName, $defaultValue);
@@ -796,6 +908,17 @@ class ConfigurationManager
         } else {
             return true;
         }
+    }
+
+    private function GetCommunityContainers() : string {
+        $envVariableName = 'AIO_COMMUNITY_CONTAINERS';
+        $configName = 'aio_community_containers';
+        $defaultValue = '';
+        return $this->GetEnvironmentalVariableOrConfig($envVariableName, $configName, $defaultValue);
+    }
+
+    public function GetEnabledCommunityContainers() : array {
+        return explode(' ', $this->GetCommunityContainers());
     }
 
     private function GetEnabledDriDevice() : string {
@@ -810,6 +933,21 @@ class ConfigurationManager
             return true;
         } else {
             return false;
+        }
+    }
+
+    private function GetKeepDisabledApps() : string {
+        $envVariableName = 'NEXTCLOUD_KEEP_DISABLED_APPS';
+        $configName = 'nextcloud_keep_disabled_apps';
+        $defaultValue = '';
+        return $this->GetEnvironmentalVariableOrConfig($envVariableName, $configName, $defaultValue);
+    }
+
+    public function shouldDisabledAppsGetRemoved() : bool {
+        if ($this->GetKeepDisabledApps() === 'true') {
+            return false;
+        } else {
+            return true;
         }
     }
 }

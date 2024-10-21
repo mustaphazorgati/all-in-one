@@ -5,44 +5,35 @@
         root /mnt/data/caddy
     }
 
+    servers {
+        # trusted_proxies placeholder
+    }
+
     log {
         level ERROR
     }
 }
 
+https://{$ADDITIONAL_TRUSTED_DOMAIN}:443,
 {$PROTOCOL}://{$NC_DOMAIN}:{$APACHE_PORT} {
+    header -Server
+    header -X-Powered-By
+
+    # Collabora
+    route /browser/* {
+        reverse_proxy {$COLLABORA_HOST}:9980
+    }
+    route /hosting/* {
+        reverse_proxy {$COLLABORA_HOST}:9980
+    }
+    route /cool/* {
+        reverse_proxy {$COLLABORA_HOST}:9980
+    }
 
     # Notify Push
     route /push/* {
         uri strip_prefix /push
-        reverse_proxy {$NEXTCLOUD_HOST}:7867 {
-            # trusted_proxies placeholder
-        }
-    }
-
-    # Talk
-    route /standalone-signaling/* {
-        uri strip_prefix /standalone-signaling
-        reverse_proxy {$TALK_HOST}:8081 {
-            # trusted_proxies placeholder
-        }
-    }
-
-    # Collabora
-    route /browser/* {
-        reverse_proxy {$COLLABORA_HOST}:9980 {
-            # trusted_proxies placeholder
-        }
-    }
-    route /hosting/* {
-        reverse_proxy {$COLLABORA_HOST}:9980 {
-            # trusted_proxies placeholder
-        }
-    }
-    route /cool/* {
-        reverse_proxy {$COLLABORA_HOST}:9980 {
-            # trusted_proxies placeholder
-        }
+        reverse_proxy {$NOTIFY_PUSH_HOST}:7867
     }
 
     # Onlyoffice
@@ -51,20 +42,28 @@
         reverse_proxy {$ONLYOFFICE_HOST}:80 {
             header_up X-Forwarded-Host {http.request.host}/onlyoffice
             header_up X-Forwarded-Proto https
-            # trusted_proxies placeholder
         }
+    }
+
+    # Talk
+    route /standalone-signaling/* {
+        uri strip_prefix /standalone-signaling
+        reverse_proxy {$TALK_HOST}:8081
+    }
+
+    # Whiteboard
+    route /whiteboard/* {
+        uri strip_prefix /whiteboard
+        reverse_proxy {$WHITEBOARD_HOST}:3002
     }
 
     # Nextcloud
     route {
-        rewrite /.well-known/carddav /remote.php/dav
-        rewrite /.well-known/caldav /remote.php/dav
         header Strict-Transport-Security max-age=31536000;
-        reverse_proxy localhost:8000 {
-            # See https://github.com/nextcloud/all-in-one/issues/828
-            # trusted_proxies placeholder
-        }
+        reverse_proxy 127.0.0.1:8000
     }
+    redir /.well-known/carddav /remote.php/dav/ 301
+    redir /.well-known/caldav /remote.php/dav/ 301
 
     # TLS options
     tls {

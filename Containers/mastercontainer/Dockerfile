@@ -1,36 +1,33 @@
+# syntax=docker/dockerfile:latest
 # Docker CLI is a requirement
-FROM docker:23.0.1-dind as dind
+FROM docker:27.3.1-cli AS docker
 
 # Caddy is a requirement
-FROM caddy:2.6.4-alpine as caddy
+FROM caddy:2.8.4-alpine AS caddy
 
-# From https://github.com/docker-library/php/blob/master/8.1/alpine3.17/fpm/Dockerfile
-FROM php:8.1.16-fpm-alpine3.17
-
-RUN set -ex; \
-    apk add --no-cache shadow; \
-    groupmod -g 333 xfs; \
-    usermod -u 333 -g 333 xfs; \
-    groupmod -g 33 www-data; \
-    usermod -u 33 -g 33 www-data
+# From https://github.com/docker-library/php/blob/master/8.3/alpine3.20/fpm/Dockerfile
+FROM php:8.3.12-fpm-alpine3.20
 
 EXPOSE 80
 EXPOSE 8080
 EXPOSE 8443
 
-RUN mkdir -p /mnt/docker-aio-config/;
-
-VOLUME /mnt/docker-aio-config/
-
-RUN mkdir -p /var/www/docker-aio;
+COPY --from=caddy /usr/bin/caddy /usr/bin/caddy
+COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
 
 WORKDIR /var/www/docker-aio
 
+# hadolint ignore=SC2086,DL3047,DL3003,DL3004
 RUN set -ex; \
+    apk upgrade --no-cache -a; \
+    apk add --no-cache shadow; \
+    groupmod -g 33 www-data; \
+    usermod -u 33 -g 33 www-data; \
+    \
     apk add --no-cache \
+        util-linux-misc \
         ca-certificates \
         wget \
-        tzdata \
         bash \
         apache2 \
         apache2-proxy \
@@ -40,60 +37,54 @@ RUN set -ex; \
         sudo \
         netcat-openbsd \
         curl \
-        grep
-
-RUN set -ex; \
+        grep; \
+    \
     apk add --no-cache --virtual .build-deps \
         autoconf \
         build-base; \
-    pecl install APCu-5.1.22; \
+    pecl install APCu-5.1.24; \
     docker-php-ext-enable apcu; \
     rm -r /tmp/pear; \
-    \
     runDeps="$( \
         scanelf --needed --nobanner --format '%n#p' --recursive /usr/local/lib/php/extensions \
             | tr ',' '\n' \
             | sort -u \
             | awk 'system("[ -e /usr/local/lib/" $1 " ]") == 0 { next } { print "so:" $1 }' \
     )"; \
-    apk add --virtual .nextcloud-aio-rundeps $runDeps; \
+    apk add --no-cache --virtual .nextcloud-aio-rundeps $runDeps; \
     apk del .build-deps; \
     grep -q '^pm = dynamic' /usr/local/etc/php-fpm.d/www.conf; \
     sed -i 's/^pm = dynamic/pm = ondemand/' /usr/local/etc/php-fpm.d/www.conf; \
     sed -i 's/^pm.max_children =.*/pm.max_children = 80/' /usr/local/etc/php-fpm.d/www.conf; \
-    sed -i 's|access.log = /proc/self/fd/2|access.log = /proc/self/fd/1|' /usr/local/etc/php-fpm.d/docker.conf
-
-COPY --from=caddy /usr/bin/caddy /usr/bin/
-RUN chmod +x /usr/bin/caddy
-
-COPY --from=dind /usr/local/bin/docker /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker
-
-RUN set -e && \
+    sed -i 's|access.log = /proc/self/fd/2|access.log = /proc/self/fd/1|' /usr/local/etc/php-fpm.d/docker.conf; \
+    grep -q ';listen.allowed_clients' /usr/local/etc/php-fpm.d/www.conf; \
+    sed -i 's|;listen.allowed_clients.*|listen.allowed_clients = 127.0.0.1,::1|' /usr/local/etc/php-fpm.d/www.conf; \
+    \
     apk add --no-cache git; \
     wget https://getcomposer.org/installer -O - | php -- --install-dir=/usr/local/bin --filename=composer; \
     chmod +x /usr/local/bin/composer; \
     cd /var/www/docker-aio; \
     git clone https://github.com/nextcloud-releases/all-in-one.git --depth 1 .; \
+    find ./ -maxdepth 1 -mindepth 1 -not -path ./php -not -path ./community-containers -exec rm -r {} \; ; \
+    chown www-data:www-data -R /var/www/docker-aio; \
     cd php; \
-    composer install --no-dev; \
-    composer clearcache; \
+    sudo -u www-data composer install --no-dev; \
+    sudo -u www-data composer clear-cache; \
     cd ..; \
     rm -f /usr/local/bin/composer; \
-    chmod 770 -R ./; \
-    chown www-data:www-data -R /var/www; \
-    rm -r ./php/data; \
-    rm -r ./php/session; \
-    apk del --no-cache git
-
-RUN mkdir -p /etc/apache2/certs && \
-    cd /etc/apache2/certs && \
-    openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 -subj "/C=DE/ST=BE/L=Local/O=Dev/CN=nextcloud.local" -keyout ./ssl.key -out ./ssl.crt;
-
-COPY mastercontainer.conf /etc/apache2/sites-available/
-
-RUN sed -i \
+    chmod -R 770 /var/www/docker-aio; \
+    chown -R www-data:www-data /var/www; \
+    rm -r php/data; \
+    rm -r php/session; \
+    \
+    mkdir -p /etc/apache2/certs; \
+    cd /etc/apache2/certs; \
+    openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 -subj "/C=DE/ST=BE/L=Local/O=Dev/CN=nextcloud.local" -keyout /etc/apache2/certs/ssl.key -out /etc/apache2/certs/ssl.crt; \
+    \
+    sed -i \
             -e '/^Listen /d' \
+            -e 's/^LogLevel .*/LogLevel error/' \
+            -e 's|^ErrorLog .*|ErrorLog /proc/self/fd/2|' \
             -e 's/User apache/User www-data/g' \
             -e 's/Group apache/Group www-data/g' \
             -e 's/^#\(LoadModule .*mod_rewrite.so\)/\1/' \
@@ -105,41 +96,34 @@ RUN sed -i \
             -e 's/^#\(LoadModule .*mod_mpm_event.so\)/\1/' \
             -e 's/\(LoadModule .*mod_mpm_worker.so\)/#\1/' \
             -e 's/\(LoadModule .*mod_mpm_prefork.so\)/#\1/' \
+            -e 's/\(ScriptAlias \)/#\1/' \
         /etc/apache2/httpd.conf; \
         mkdir -p /etc/apache2/logs; \
         rm /etc/apache2/conf.d/ssl.conf; \
         echo "ServerName localhost" | tee -a /etc/apache2/httpd.conf; \
+        grep -q '^LoadModule lbmethod_heartbeat_module' /etc/apache2/conf.d/proxy.conf; \
+        sed -i 's|^LoadModule lbmethod_heartbeat_module.*|#LoadModule lbmethod_heartbeat_module|' /etc/apache2/conf.d/proxy.conf; \
+        echo "SSLSessionCache nonenotnull" | tee -a /etc/apache2/httpd.conf; \
         echo "LoadModule ssl_module modules/mod_ssl.so" | tee -a /etc/apache2/httpd.conf; \
         echo "LoadModule socache_shmcb_module modules/mod_socache_shmcb.so" | tee -a /etc/apache2/httpd.conf; \
-        echo "Include /etc/apache2/sites-available/mastercontainer.conf" | tee -a /etc/apache2/httpd.conf
-
-RUN set -ex; \
+        echo "Include /etc/apache2/sites-available/mastercontainer.conf" | tee -a /etc/apache2/httpd.conf; \
+    \
     rm -f /etc/apache2/conf.d/default.conf \
           /etc/apache2/conf.d/userdir.conf \
-          /etc/apache2/conf.d/info.conf
-
-RUN mkdir /var/log/supervisord; \
+          /etc/apache2/conf.d/info.conf; \
+    \
+    rm -rf /var/www/localhost/cgi-bin/; \
+    mkdir /var/log/supervisord; \
     mkdir /var/run/supervisord;
 
-COPY Caddyfile /
-COPY start.sh /usr/bin/
-COPY backup-time-file-watcher.sh /
-COPY session-deduplicator.sh /
-COPY cron.sh /
-COPY daily-backup.sh /
-COPY supervisord.conf /
-COPY healthcheck.sh /
-RUN chmod +x /usr/bin/start.sh; \
-    chmod +x /cron.sh; \
-    chmod +x /session-deduplicator.sh; \
-    chmod +x /backup-time-file-watcher.sh; \
-    chmod +x /daily-backup.sh; \
-    chmod a+r /Caddyfile; \
-    chmod +x /healthcheck.sh
+COPY --chmod=775 *.sh /
+COPY --chmod=664 Caddyfile /Caddyfile
+COPY --chmod=664 supervisord.conf /supervisord.conf
+COPY mastercontainer.conf /etc/apache2/sites-available/mastercontainer.conf
 
+# hadolint ignore=DL3002
 USER root
 
-ENTRYPOINT ["start.sh"]
-CMD ["/usr/bin/supervisord", "-c", "/supervisord.conf"]
+ENTRYPOINT ["/start.sh"]
 
 HEALTHCHECK CMD /healthcheck.sh

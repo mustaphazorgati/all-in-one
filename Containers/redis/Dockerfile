@@ -1,16 +1,21 @@
-# From https://github.com/docker-library/redis/blob/master/7.0/alpine/Dockerfile
-FROM redis:7.0.8-alpine
+# syntax=docker/dockerfile:latest
+# From https://github.com/docker-library/redis/blob/master/7.2/alpine/Dockerfile
+FROM redis:7.2.6-alpine
 
-RUN apk add --no-cache openssl bash
+COPY --chmod=775 start.sh /start.sh
 
-COPY start.sh /usr/bin/
-RUN chmod +x /usr/bin/start.sh
-
+RUN set -ex; \
+    apk upgrade --no-cache -a; \
+    apk add --no-cache openssl bash; \
+    \
 # Give root a random password
-RUN echo "root:$(openssl rand -base64 12)" | chpasswd
+    echo "root:$(openssl rand -base64 12)" | chpasswd; \
+    \
+# Get rid of unused binaries
+    rm -f /usr/local/bin/gosu;
 
 USER redis
-ENTRYPOINT ["start.sh"]
+ENTRYPOINT ["/start.sh"]
 
 HEALTHCHECK CMD redis-cli -a $REDIS_HOST_PASSWORD PING || exit 1
-LABEL com.centurylinklabs.watchtower.monitor-only="true"
+LABEL com.centurylinklabs.watchtower.enable="false"

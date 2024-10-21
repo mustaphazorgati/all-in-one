@@ -2,29 +2,22 @@
 
 namespace AIO;
 
+use AIO\Container\AioVariables;
 use AIO\Container\Container;
 use AIO\Container\ContainerEnvironmentVariables;
 use AIO\Container\ContainerPort;
 use AIO\Container\ContainerPorts;
 use AIO\Container\ContainerVolume;
 use AIO\Container\ContainerVolumes;
-use AIO\Container\State\RunningState;
 use AIO\Data\ConfigurationManager;
 use AIO\Data\DataConst;
 use AIO\Docker\DockerActionManager;
 
-class ContainerDefinitionFetcher
-{
-    private ConfigurationManager $configurationManager;
-    private \DI\Container $container;
-
+readonly class ContainerDefinitionFetcher {
     public function __construct(
-        ConfigurationManager $configurationManager,
-        \DI\Container $container
-    )
-    {
-        $this->configurationManager = $configurationManager;
-        $this->container = $container;
+        private ConfigurationManager $configurationManager,
+        private \DI\Container $container
+    ) {
     }
 
     public function GetContainerById(string $id): Container
@@ -43,9 +36,22 @@ class ContainerDefinitionFetcher
     /**
      * @return array
      */
-    private function GetDefinition(bool $latest): array
+    private function GetDefinition(): array
     {
         $data = json_decode(file_get_contents(__DIR__ . '/../containers.json'), true);
+
+        $additionalContainerNames = [];
+        foreach ($this->configurationManager->GetEnabledCommunityContainers() as $communityContainer) {
+            if ($communityContainer !== '') {
+                $path = DataConst::GetCommunityContainersDirectory() . '/' . $communityContainer . '/' . $communityContainer . '.json';
+                $additionalData = json_decode(file_get_contents($path), true);
+                $data = array_merge_recursive($data, $additionalData);
+                if (isset($additionalData['aio_services_v1'][0]['display_name']) && $additionalData['aio_services_v1'][0]['display_name'] !== '') {
+                    // Store container_name of community containers in variable for later
+                    $additionalContainerNames[] = $additionalData['aio_services_v1'][0]['container_name'];
+                }
+            }
+        }
 
         $containers = [];
         foreach ($data['aio_services_v1'] as $entry) {
@@ -65,6 +71,10 @@ class ContainerDefinitionFetcher
                 if (!$this->configurationManager->isTalkEnabled()) {
                     continue;
                 }
+            } elseif ($entry['container_name'] === 'nextcloud-aio-talk-recording') {
+                if (!$this->configurationManager->isTalkRecordingEnabled()) {
+                    continue;
+                }
             } elseif ($entry['container_name'] === 'nextcloud-aio-imaginary') {
                 if (!$this->configurationManager->isImaginaryEnabled()) {
                     continue;
@@ -73,21 +83,19 @@ class ContainerDefinitionFetcher
                 if (!$this->configurationManager->isFulltextsearchEnabled()) {
                     continue;
                 }
+            } elseif ($entry['container_name'] === 'nextcloud-aio-docker-socket-proxy') {
+                if (!$this->configurationManager->isDockerSocketProxyEnabled()) {
+                    continue;
+                }
+            } elseif ($entry['container_name'] === 'nextcloud-aio-whiteboard') {
+                if (!$this->configurationManager->isWhiteboardEnabled()) {
+                    continue;
+                }
             }
 
             $ports = new ContainerPorts();
             if (isset($entry['ports'])) {
                 foreach ($entry['ports'] as $value) {
-                    if ($value['port_number'] === '%APACHE_PORT%') {
-                        $value['port_number'] = $this->configurationManager->GetApachePort();
-                    } elseif ($value['port_number'] === '%TALK_PORT%') {
-                        $value['port_number'] = $this->configurationManager->GetTalkPort();
-                    }
-
-                    if ($value['ip_binding'] === '%APACHE_IP_BINDING%') {
-                        $value['ip_binding'] = $this->configurationManager->GetApacheIPBinding();
-                    }
-                    
                     $ports->AddPort(
                         new ContainerPort(
                             $value['port_number'],
@@ -117,7 +125,7 @@ class ContainerDefinitionFetcher
                         if ($value['source'] === '') {
                             continue;
                         }
-                    } elseif ($value['source'] === '%DOCKER_SOCKET_PATH%') {
+                    } elseif ($value['source'] === '%WATCHTOWER_DOCKER_SOCKET_PATH%') {
                         $value['source'] = $this->configurationManager->GetDockerSocketPath();
                         if($value['source'] === '') {
                             continue;
@@ -146,7 +154,16 @@ class ContainerDefinitionFetcher
 
             $dependsOn = [];
             if (isset($entry['depends_on'])) {
-                foreach ($entry['depends_on'] as $value) {
+                $valueDependsOn = $entry['depends_on'];
+                if ($entry['container_name'] === 'nextcloud-aio-apache') {
+                    // Add community containers first and default ones last so that aio_variables works correctly
+                    $valueDependsOnTemp = [];
+                    foreach ($additionalContainerNames as $containerName) {
+                        $valueDependsOnTemp[] = $containerName;
+                    }
+                    $valueDependsOn = array_merge_recursive($valueDependsOnTemp, $valueDependsOn);
+                }
+                foreach ($valueDependsOn as $value) {
                     if ($value === 'nextcloud-aio-clamav') {
                         if (!$this->configurationManager->isClamavEnabled()) {
                             continue;
@@ -163,6 +180,10 @@ class ContainerDefinitionFetcher
                         if (!$this->configurationManager->isTalkEnabled()) {
                             continue;
                         }
+                    } elseif ($value === 'nextcloud-aio-talk-recording') {
+                        if (!$this->configurationManager->isTalkRecordingEnabled()) {
+                            continue;
+                        }
                     } elseif ($value === 'nextcloud-aio-imaginary') {
                         if (!$this->configurationManager->isImaginaryEnabled()) {
                             continue;
@@ -171,15 +192,30 @@ class ContainerDefinitionFetcher
                         if (!$this->configurationManager->isFulltextsearchEnabled()) {
                             continue;
                         }
+                    } elseif ($value === 'nextcloud-aio-docker-socket-proxy') {
+                        if (!$this->configurationManager->isDockerSocketProxyEnabled()) {
+                            continue;
+                        }
+                    } elseif ($value === 'nextcloud-aio-whiteboard') {
+                        if (!$this->configurationManager->isWhiteboardEnabled()) {
+                            continue;
+                        }
                     }
                     $dependsOn[] = $value;
                 }
             }
-            
+
             $variables = new ContainerEnvironmentVariables();
             if (isset($entry['environment'])) {
                 foreach ($entry['environment'] as $value) {
                     $variables->AddVariable($value);
+                }
+            }
+
+            $aioVariables = new AioVariables();
+            if (isset($entry['aio_variables'])) {
+                foreach ($entry['aio_variables'] as $value) {
+                    $aioVariables->AddVariable($value);
                 }
             }
 
@@ -213,6 +249,56 @@ class ContainerDefinitionFetcher
                 $devices = $entry['devices'];
             }
 
+            $capAdd = [];
+            if (isset($entry['cap_add'])) {
+                $capAdd = $entry['cap_add'];
+            }
+
+            $shmSize = -1;
+            if (isset($entry['shm_size'])) {
+                $shmSize = $entry['shm_size'];
+            }
+
+            $apparmorUnconfined = false;
+            if (isset($entry['apparmor_unconfined'])) {
+                $apparmorUnconfined = $entry['apparmor_unconfined'];
+            }
+
+            $backupVolumes = [];
+            if (isset($entry['backup_volumes'])) {
+                $backupVolumes = $entry['backup_volumes'];
+            }
+
+            $nextcloudExecCommands = [];
+            if (isset($entry['nextcloud_exec_commands'])) {
+                $nextcloudExecCommands = $entry['nextcloud_exec_commands'];
+            }
+
+            $readOnlyRootFs = false;
+            if (isset($entry['read_only'])) {
+                $readOnlyRootFs = $entry['read_only'];
+            }
+
+            $tmpfs = [];
+            if (isset($entry['tmpfs'])) {
+                $tmpfs = $entry['tmpfs'];
+            }
+
+            $init = true;
+            if (isset($entry['init'])) {
+                $init = $entry['init'];
+            }
+
+            $imageTag = '%AIO_CHANNEL%';
+            if (isset($entry['image_tag'])) {
+                $imageTag = $entry['image_tag'];
+            }
+
+            $documentation = '';
+            if (isset($entry['documentation'])) {
+                $documentation = $entry['documentation'];
+            }
+
             $containers[] = new Container(
                 $entry['container_name'],
                 $displayName,
@@ -226,6 +312,17 @@ class ContainerDefinitionFetcher
                 $dependsOn,
                 $secrets,
                 $devices,
+                $capAdd,
+                $shmSize,
+                $apparmorUnconfined,
+                $backupVolumes,
+                $nextcloudExecCommands,
+                $readOnlyRootFs,
+                $tmpfs,
+                $init,
+                $imageTag,
+                $aioVariables,
+                $documentation,
                 $this->container->get(DockerActionManager::class)
             );
         }
@@ -235,35 +332,6 @@ class ContainerDefinitionFetcher
 
     public function FetchDefinition(): array
     {
-        if (!file_exists(DataConst::GetDataDirectory() . '/containers.json')) {
-            $containers = $this->GetDefinition(true);
-        } else {
-            $containers = $this->GetDefinition(false);
-        }
-
-        $borgBackupMode = $this->configurationManager->GetBorgBackupMode();
-        $fetchLatest = false;
-
-        foreach ($containers as $container) {
-
-            if ($container->GetIdentifier() === 'nextcloud-aio-borgbackup') {
-                if ($container->GetRunningState() === RunningState::class) {
-                    if ($borgBackupMode !== 'backup' && $borgBackupMode !== 'restore') {
-                        $fetchLatest = true;
-                    }
-                } else {
-                    $fetchLatest = true;
-                }
-
-            } elseif ($container->GetIdentifier() === 'nextcloud-aio-watchtower' && $container->GetRunningState() === RunningState::class) {
-                return $containers;
-            }
-        }
-
-        if ($fetchLatest === true) {
-            $containers = $this->GetDefinition(true);
-        }
-
-        return $containers;
+        return $this->GetDefinition();
     }
 }

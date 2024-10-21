@@ -4,54 +4,70 @@
 if [ -z "$NC_DOMAIN" ]; then
     echo "You need to provide the NC_DOMAIN."
     exit 1
+elif [ -z "$TALK_PORT" ]; then
+    echo "You need to provide the TALK_PORT."
+    exit 1
 elif [ -z "$TURN_SECRET" ]; then
     echo "You need to provide the TURN_SECRET."
-    exit 1
-elif [ -z "$JANUS_API_KEY" ]; then
-    echo "You need to provide the JANUS_API_KEY."
     exit 1
 elif [ -z "$SIGNALING_SECRET" ]; then
     echo "You need to provide the SIGNALING_SECRET."
     exit 1
+elif [ -z "$INTERNAL_SECRET" ]; then
+    echo "You need to provide the INTERNAL_SECRET."
+    exit 1
 fi
 
-# Turn: https://github.com/coturn/coturn/blob/master/examples/etc/turnserver.conf
-cat << TURN_CONF > "/etc/turnserver.conf"
-listening-port=$TALK_PORT
-fingerprint
-lt-cred-mech
-use-auth-secret
-static-auth-secret=$TURN_SECRET
-realm=$NC_DOMAIN
-total-quota=0
-bps-capacity=0
-stale-nonce
-no-multicast-peers
-simple-log
-pidfile=/var/tmp/turnserver.pid
-no-tls
-no-dtls
-userdb=/var/lib/turn/turndb
-TURN_CONF
-
-# Janus
 set -x
-sed -i "s|#turn_rest_api_key.*|turn_rest_api_key = \"$JANUS_API_KEY\"|" /etc/janus/janus.jcfg
-sed -i "s|#full_trickle.*|full_trickle = true|g" /etc/janus/janus.jcfg
-sed -i 's|#stun_server.*|stun_server = "127.0.0.1"|g' /etc/janus/janus.jcfg
-sed -i "s|#stun_port.*|stun_port = $TALK_PORT|g" /etc/janus/janus.jcfg
-sed -i "s|#turn_port.*|turn_port = $TALK_PORT|g" /etc/janus/janus.jcfg
-sed -i 's|#turn_server.*|turn_server = "127.0.0.1"|g' /etc/janus/janus.jcfg
-sed -i 's|#turn_type .*|turn_type = "udp"|g' /etc/janus/janus.jcfg
-sed -i 's|#ice_ignore_list .*|ice_ignore_list = "udp"|g' /etc/janus/janus.jcfg
-sed -i 's|#interface.*|interface = "lo"|g' /etc/janus/janus.transport.websockets.jcfg
-sed -i 's|#ws_interface.*|ws_interface = "lo"|g' /etc/janus/janus.transport.websockets.jcfg
-sed -i 's|certfile =|#certfile =|g' /etc/janus/janus.transport.mqtt.jcfg
-sed -i 's|keyfile =|#keyfile =|g' /etc/janus/janus.transport.mqtt.jcfg
+IPv4_ADDRESS_TALK_RELAY="$(hostname -i | grep -oP '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+# shellcheck disable=SC2153
+IPv4_ADDRESS_TALK="$(dig "$TALK_HOST" IN A +short +search | grep '^[0-9.]\+$' | sort | head -n1)"
+# shellcheck disable=SC2153
+IPv6_ADDRESS_TALK="$(dig "$TALK_HOST" AAAA +short +search | grep '^[0-9a-f:]\+$' | sort | head -n1)"
 set +x
 
+if [ -n "$IPv4_ADDRESS_TALK" ] && [ "$IPv4_ADDRESS_TALK_RELAY" = "$IPv4_ADDRESS_TALK" ]; then
+    IPv4_ADDRESS_TALK=""
+fi
+
+# Turn
+cat << TURN_CONF > "/conf/eturnal.yml"
+eturnal:
+  listen:
+    - ip: "::"
+      port: $TALK_PORT
+      transport: udp
+    - ip: "::"
+      port: $TALK_PORT
+      transport: tcp
+  log_dir: stdout
+  log_level: warning
+  secret: "$TURN_SECRET"
+  relay_ipv4_addr: "$IPv4_ADDRESS_TALK_RELAY"
+  relay_ipv6_addr: "$IPv6_ADDRESS_TALK"
+  blacklist_peers:
+  - recommended
+  whitelist_peers:
+  - 127.0.0.1
+  - ::1
+  - "$IPv4_ADDRESS_TALK_RELAY"
+  - "$IPv4_ADDRESS_TALK"
+  - "$IPv6_ADDRESS_TALK"
+TURN_CONF
+
+# Remove empty lines so that the config is not invalid
+sed -i '/""/d' /conf/eturnal.yml
+
+if [ -z "$TALK_MAX_STREAM_BITRATE" ]; then
+    TALK_MAX_STREAM_BITRATE=1048576
+fi
+
+if [ -z "$TALK_MAX_SCREEN_BITRATE" ]; then
+    TALK_MAX_SCREEN_BITRATE=2097152
+fi
+
 # Signling
-cat << SIGNALING_CONF > "/etc/signaling/server.conf"
+cat << SIGNALING_CONF > "/conf/signaling.conf"
 [http]
 listen = 0.0.0.0:8081
 
@@ -63,7 +79,7 @@ hashkey = $(openssl rand -hex 16)
 blockkey = $(openssl rand -hex 16)
 
 [clients]
-internalsecret = $(openssl rand -hex 16)
+internalsecret = ${INTERNAL_SECRET}
 
 [backend]
 backends = backend-1
@@ -74,6 +90,8 @@ connectionsperhost = 8
 [backend-1]
 url = https://${NC_DOMAIN}
 secret = ${SIGNALING_SECRET}
+maxstreambitrate = ${TALK_MAX_STREAM_BITRATE}
+maxscreenbitrate = ${TALK_MAX_SCREEN_BITRATE}
 
 [nats]
 url = nats://127.0.0.1:4222
@@ -81,11 +99,8 @@ url = nats://127.0.0.1:4222
 [mcu]
 type = janus
 url = ws://127.0.0.1:8188
-
-[turn]
-apikey = ${JANUS_API_KEY}
-secret = ${TURN_SECRET}
-servers = turn:$NC_DOMAIN:$TALK_PORT?transport=tcp,turn:$NC_DOMAIN:$TALK_PORT?transport=udp
+maxstreambitrate = ${TALK_MAX_STREAM_BITRATE}
+maxscreenbitrate = ${TALK_MAX_SCREEN_BITRATE}
 SIGNALING_CONF
 
 exec "$@"

@@ -1,36 +1,73 @@
 function makeOptionsFormSubmitVisible() {
-    var optionsFormSubmit = document.getElementById("options-form-submit");
+    let optionsFormSubmit = document.getElementById("options-form-submit");
     optionsFormSubmit.style.display = 'block';
+}
+
+function handleTalkVisibility() {
+    let talk = document.getElementById("talk");
+    let talkRecording = document.getElementById("talk-recording")
+    if (talk.checked) {
+        talkRecording.disabled = false
+    } else {
+        talkRecording.checked = false
+        talkRecording.disabled = true
+    }
+}
+
+function handleDockerSocketProxyWarning() {
+    let dockerSocketProxy = document.getElementById("docker-socket-proxy");
+    if (dockerSocketProxy.checked) {
+        alert('⚠️ Warning! Enabling this container comes with possible Security problems since you are exposing the docker socket and all its privileges to the Nextcloud container. Enable this only if you are sure what you are doing!')
+    }
 }
 
 document.addEventListener("DOMContentLoaded", function(event) {
     // handle submit button for options form
-    var optionsFormSubmit = document.getElementById("options-form-submit");
+    let optionsFormSubmit = document.getElementById("options-form-submit");
     optionsFormSubmit.style.display = 'none';
 
     // Clamav
-    var clamav = document.getElementById("clamav");
+    let clamav = document.getElementById("clamav");
     clamav.addEventListener('change', makeOptionsFormSubmitVisible);
 
     // OnlyOffice
-    var onlyoffice = document.getElementById("onlyoffice");
+    let onlyoffice = document.getElementById("onlyoffice");
     if (onlyoffice) {
         onlyoffice.addEventListener('change', makeOptionsFormSubmitVisible);
     }
 
     // Collabora
-    var collabora = document.getElementById("collabora");
+    let collabora = document.getElementById("collabora");
     collabora.addEventListener('change', makeOptionsFormSubmitVisible);
 
     // Talk
-    var talk = document.getElementById("talk");
+    let talk = document.getElementById("talk");
     talk.addEventListener('change', makeOptionsFormSubmitVisible);
+    talk.addEventListener('change', handleTalkVisibility);
+
+    // Talk-recording
+    let talkRecording = document.getElementById("talk-recording");
+    talkRecording.addEventListener('change', makeOptionsFormSubmitVisible);
+    if (!talk.checked) {
+        talkRecording.disabled = true
+    }
 
     // Imaginary
-    var imaginary = document.getElementById("imaginary");
+    let imaginary = document.getElementById("imaginary");
     imaginary.addEventListener('change', makeOptionsFormSubmitVisible);
 
     // Fulltextsearch
-    var fulltextsearch = document.getElementById("fulltextsearch");
+    let fulltextsearch = document.getElementById("fulltextsearch");
     fulltextsearch.addEventListener('change', makeOptionsFormSubmitVisible);
+
+    // Docker socket proxy
+    let dockerSocketProxy = document.getElementById("docker-socket-proxy");
+    if (dockerSocketProxy) {
+        dockerSocketProxy.addEventListener('change', makeOptionsFormSubmitVisible);
+        // dockerSocketProxy.addEventListener('change', handleDockerSocketProxyWarning);
+    }
+
+    // Whiteboard
+    let whiteboard = document.getElementById("whiteboard");
+    whiteboard.addEventListener('change', makeOptionsFormSubmitVisible);
 });

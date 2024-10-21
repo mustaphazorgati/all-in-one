@@ -16,11 +16,15 @@ fi
 sudo -u www-data touch "/mnt/docker-aio-config/data/daily_backup_running"
 
 # Check if apache is running/stopped, watchtower is stopped and backupcontainer is stopped
-APACHE_PORT="$(docker inspect nextcloud-aio-apache --format "{{.HostConfig.PortBindings}}" | grep -oP '[0-9]+' | head -1)"
-while docker ps --format "{{.Names}}" | grep -q "^nextcloud-aio-apache$" && ! nc -z nextcloud-aio-apache "$APACHE_PORT"; do
-    echo "Waiting for apache to become available"
-    sleep 30
-done
+APACHE_PORT="$(docker inspect nextcloud-aio-apache --format "{{.Config.Env}}" | grep -o 'APACHE_PORT=[0-9]\+' | grep -o '[0-9]\+' | head -1)"
+if [ -z "$APACHE_PORT" ]; then
+    echo "APACHE_PORT is not set which is not expected..."
+else
+    while docker ps --format "{{.Names}}" | grep -q "^nextcloud-aio-apache$" && ! nc -z nextcloud-aio-apache "$APACHE_PORT"; do
+        echo "Waiting for apache to become available"
+        sleep 30
+    done
+fi
 while docker ps --format "{{.Names}}" | grep -q "^nextcloud-aio-watchtower$"; do
     echo "Waiting for watchtower to stop"
     sleep 30
@@ -38,9 +42,10 @@ if [ "$AUTOMATIC_UPDATES" = 1 ]; then
 fi
 
 # Wait for watchtower to stop
-if [ "$AUTOMATIC_UPDATES" = 1 ] && ! docker ps --format "{{.Names}}" | grep -q "^nextcloud-aio-watchtower$"; then
-    echo "Something seems to be wrong: Watchtower should be started at this step."
-else
+if [ "$AUTOMATIC_UPDATES" = 1 ]; then
+    if ! docker ps --format "{{.Names}}" | grep -q "^nextcloud-aio-watchtower$"; then
+        echo "Something seems to be wrong: Watchtower should be started at this step."
+    fi
     while docker ps --format "{{.Names}}" | grep -q "^nextcloud-aio-watchtower$"; do
         echo "Waiting for watchtower to stop"
         sleep 30
@@ -58,6 +63,13 @@ fi
 if [ "$DAILY_BACKUP" = 1 ]; then
     echo "Creating daily backup..."
     sudo -u www-data php /var/www/docker-aio/php/src/Cron/CreateBackup.php
+    if ! docker ps --format "{{.Names}}" | grep -q "^nextcloud-aio-borgbackup$"; then
+        echo "Something seems to be wrong: the borg container should be started at this step."
+    fi
+    while docker ps --format "{{.Names}}" | grep -q "^nextcloud-aio-borgbackup$"; do
+        echo "Waiting for backup container to stop"
+        sleep 30
+    done
 fi
 
 # Execute backup check
@@ -97,7 +109,7 @@ if [ "$DAILY_BACKUP" = 1 ] && ([ "$AUTOMATIC_UPDATES" = 1 ] || [ "$START_CONTAIN
         done
     fi
     echo "Sending backup notification..."
-    sudo -u www-data php /var/www/docker-aio/php/src/Cron/BackupNotification.php
+    sudo -E -u www-data php /var/www/docker-aio/php/src/Cron/BackupNotification.php
 fi
 
 echo "Daily backup script has finished"

@@ -6,12 +6,11 @@ use AIO\ContainerDefinitionFetcher;
 use AIO\Data\ConfigurationManager;
 use GuzzleHttp\Client;
 
-class DockerHubManager
-{
+readonly class DockerHubManager {
     private Client $guzzleClient;
 
-    public function __construct()
-    {
+    public function __construct(
+    ) {
         $this->guzzleClient = new Client();
     }
 
@@ -35,7 +34,7 @@ class DockerHubManager
             if(isset($decodedBody['token'])) {
                 $authToken = $decodedBody['token'];
                 $manifestRequest = $this->guzzleClient->request(
-                    'GET',
+                    'HEAD',
                     'https://registry-1.docker.io/v2/'.$name.'/manifests/' . $tag,
                     [
                         'headers' => [

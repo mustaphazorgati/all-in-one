@@ -1,75 +1,107 @@
-FROM ubuntu:focal-20230126
+# syntax=docker/dockerfile:latest
+FROM nats:2.10.22-scratch AS nats
+FROM eturnal/eturnal:1.12.0 AS eturnal
+FROM strukturag/nextcloud-spreed-signaling:2.0.0 AS signaling
+FROM alpine:3.20.3 AS janus
 
+ARG JANUS_VERSION=v0.14.4
+WORKDIR /src
 RUN set -ex; \
-    \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        openssl \
-        coturn \
-        supervisor \
-        curl \
+    apk add --no-cache \
         ca-certificates \
-        netcat \
-    ; \
-    rm -rf /var/lib/apt/lists/*
+        git \
+        autoconf \
+        automake \
+        build-base \
+        pkgconfig \
+        libtool \
+        util-linux \
+        glib-dev \
+        zlib-dev \
+        openssl-dev \
+        jansson-dev \
+        libnice-dev \
+        libconfig-dev \
+        libsrtp-dev \
+        libusrsctp-dev \
+        gengetopt-dev \
+        libwebsockets-dev; \
+    git clone --recursive https://github.com/meetecho/janus-gateway --depth=1 --single-branch --branch "$JANUS_VERSION" /src; \
+    /src/autogen.sh; \
+    /src/configure --disable-rabbitmq --disable-mqtt --disable-boringssl; \
+    make; \
+    make install; \
+    make configs; \
+    rename -v ".jcfg.sample" ".jcfg" /usr/local/etc/janus/*.jcfg.sample
+
+FROM alpine:3.20.3
+ENV ETURNAL_ETC_DIR="/conf"
+COPY --from=janus     --chmod=777 --chown=1000:1000 /usr/local                          /usr/local
+COPY --from=eturnal   --chmod=777 --chown=1000:1000 /opt/eturnal                        /opt/eturnal
+COPY --from=nats      --chmod=777 --chown=1000:1000 /nats-server                        /usr/local/bin/nats-server
+COPY --from=signaling --chmod=777 --chown=1000:1000 /usr/bin/nextcloud-spreed-signaling /usr/local/bin/nextcloud-spreed-signaling
+
+COPY --chmod=775 start.sh /start.sh
+COPY --chmod=775 healthcheck.sh /healthcheck.sh
+COPY --chmod=664 supervisord.conf /supervisord.conf
 
 RUN set -ex; \
-    curl -sL -o "/etc/apt/trusted.gpg.d/morph027-nats-server.asc" "https://packaging.gitlab.io/nats-server/gpg.key"; \
-    echo "deb https://packaging.gitlab.io/nats-server nats main" > /etc/apt/sources.list.d/morph027-nats-server.list; \
-    . /etc/lsb-release; \
-    curl -sL -o "/etc/apt/trusted.gpg.d/morph027-janus.asc" "https://packaging.gitlab.io/janus/gpg.key"; \
-    echo "deb https://packaging.gitlab.io/janus/$DISTRIB_CODENAME $DISTRIB_CODENAME main" > /etc/apt/sources.list.d/morph027-janus.list; \
-    curl -sL -o "/etc/apt/trusted.gpg.d/morph027-nextcloud-spreed-signaling.asc" "https://packaging.gitlab.io/nextcloud-spreed-signaling/gpg.key"; \
-    echo "deb https://packaging.gitlab.io/nextcloud-spreed-signaling signaling main" > /etc/apt/sources.list.d/morph027-nextcloud-spreed-signaling.list
-
-RUN set -ex; \
+    apk upgrade --no-cache -a; \
+    apk add --no-cache \
+        ca-certificates \
+        tzdata \
+        bash \
+        openssl \
+        supervisor \
+        bind-tools \
+        netcat-openbsd \
+        \
+        glib \
+        zlib \
+        libssl3 \
+        libcrypto3 \
+        jansson \
+        libnice \
+        libconfig \
+        libsrtp \
+        libusrsctp \
+        libwebsockets \
+        \
+        shadow \
+        grep; \
+    useradd --system -u 1000 eturnal; \
+    apk del --no-cache \
+        shadow; \
     \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        nats-server \
-        janus \
-        nextcloud-spreed-signaling \
-    ; \
-    rm -rf /var/lib/apt/lists/*
-
-RUN adduser --system --group talk
-
-RUN mkdir /var/log/supervisord; \
-    mkdir /var/run/supervisord; \
-    chown talk:talk /var/run/supervisord; \
-    chown talk:talk /var/log/supervisord;
-
-COPY start.sh /usr/bin/
-COPY supervisord.conf /
-RUN chmod +x /usr/bin/start.sh; \
-    chmod +r /supervisord.conf; \
-    touch /etc/turnserver.conf; \
-    chown talk:talk /etc/turnserver.conf; \
-    sed -i '/TURNSERVER_ENABLED/c\TURNSERVER_ENABLED=1' /etc/default/coturn; \
-    mkdir -p /var/tmp;
-
-RUN curl -sL -o "/usr/share/janus/lua/json.lua" "https://raw.githubusercontent.com/rxi/json.lua/master/json.lua"; \
-    curl -sL -o "/usr/share/janus/lua/ansicolors.lua" "https://raw.githubusercontent.com/kikito/ansicolors.lua/master/ansicolors.lua"
-
-RUN mkdir -p /etc/nats; \
-    echo "listen: 127.0.0.1:4222" > /etc/nats/nats.conf; \
-    mkdir /var/lib/turn; \
-    chown talk:talk /etc; \
-    chown talk:talk -R /etc/nats; \
-    chown talk:talk -R /etc/janus; \
-    chown talk:talk -R /etc/signaling; \
-    chown talk:talk -R /usr; \
-    chown talk:talk -R /var/lib/turn;
-
 # Give root a random password
-RUN echo "root:$(openssl rand -base64 12)" | chpasswd
+    echo "root:$(openssl rand -base64 12)" | chpasswd; \
+    \
+    touch \
+        /etc/nats.conf \
+        /etc/eturnal.yml; \
+    echo "listen: 127.0.0.1:4222" | tee /etc/nats.conf; \
+    mkdir -p \
+        /var/tmp \
+        /conf \
+        /var/lib/turn \
+        /var/log/supervisord \
+        /var/run/supervisord \
+        /usr/local/lib/janus/loggers; \
+    chown eturnal:eturnal -R \
+        /etc/nats.conf \
+        /var/log/supervisord \
+        /var/run/supervisord; \
+    chmod 777 -R \
+        /tmp \
+        /conf \
+        /var/run/supervisord \
+        /var/log/supervisord; \
+    ln -s /opt/eturnal/bin/stun /usr/local/bin/stun; \
+    ln -s /opt/eturnal/bin/eturnalctl /usr/local/bin/eturnalctl
 
-# Set default talk port https://github.com/nextcloud/all-in-one/issues/1011
-ENV TALK_PORT=3478
+USER eturnal
+ENTRYPOINT ["/start.sh"]
+CMD ["supervisord", "-c", "/supervisord.conf"]
 
-USER talk
-ENTRYPOINT ["start.sh"]
-CMD ["/usr/bin/supervisord", "-c", "/supervisord.conf"]
-
-HEALTHCHECK CMD (nc -z localhost 8081 && nc -z localhost 8188 && nc -z localhost 4222 && nc -z localhost $TALK_PORT) || exit 1
-LABEL com.centurylinklabs.watchtower.monitor-only="true"
+HEALTHCHECK CMD /healthcheck.sh
+LABEL com.centurylinklabs.watchtower.enable="false"

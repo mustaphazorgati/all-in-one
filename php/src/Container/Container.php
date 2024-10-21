@@ -2,57 +2,42 @@
 
 namespace AIO\Container;
 
-use AIO\Container\State\IContainerState;
 use AIO\Data\ConfigurationManager;
 use AIO\Docker\DockerActionManager;
 use AIO\ContainerDefinitionFetcher;
 
-class Container {
-    private string $identifier;
-    private string $displayName;
-    private string $containerName;
-    private string $restartPolicy;
-    private int $maxShutdownTime;
-    private ContainerPorts $ports;
-    private string $internalPorts;
-    private ContainerVolumes $volumes;
-    private ContainerEnvironmentVariables $containerEnvironmentVariables;
-    /** @var string[] */
-    private array $dependsOn;
-    /** @var string[] */
-    private array $secrets;
-    /** @var string[] */
-    private array $devices;
-    private DockerActionManager $dockerActionManager;
-
+readonly class Container {
     public function __construct(
-        string $identifier,
-        string $displayName,
-        string $containerName,
-        string $restartPolicy,
-        int $maxShutdownTime,
-        ContainerPorts $ports,
-        string $internalPorts,
-        ContainerVolumes $volumes,
-        ContainerEnvironmentVariables $containerEnvironmentVariables,
-        array $dependsOn,
-        array $secrets,
-        array $devices,
-        DockerActionManager $dockerActionManager
+        private string                        $identifier,
+        private string                        $displayName,
+        private string                        $containerName,
+        private string                        $restartPolicy,
+        private int                           $maxShutdownTime,
+        private ContainerPorts                $ports,
+        private string                        $internalPorts,
+        private ContainerVolumes              $volumes,
+        private ContainerEnvironmentVariables $containerEnvironmentVariables,
+        /** @var string[] */
+        private array                         $dependsOn,
+        /** @var string[] */
+        private array                         $secrets,
+        /** @var string[] */
+        private array                         $devices,
+        /** @var string[] */
+        private array                         $capAdd,
+        private int                           $shmSize,
+        private bool                          $apparmorUnconfined,
+        /** @var string[] */
+        private array                         $backupVolumes,
+        private array                         $nextcloudExecCommands,
+        private bool                          $readOnlyRootFs,
+        private array                         $tmpfs,
+        private bool                          $init,
+        private string                        $imageTag,
+        private AioVariables                  $aioVariables,
+        private string                        $documentation,
+        private DockerActionManager           $dockerActionManager
     ) {
-        $this->identifier = $identifier;
-        $this->displayName = $displayName;
-        $this->containerName = $containerName;
-        $this->restartPolicy = $restartPolicy;
-        $this->maxShutdownTime = $maxShutdownTime;
-        $this->ports = $ports;
-        $this->internalPorts = $internalPorts;
-        $this->volumes = $volumes;
-        $this->containerEnvironmentVariables = $containerEnvironmentVariables;
-        $this->dependsOn = $dependsOn;
-        $this->secrets = $secrets;
-        $this->devices = $devices;
-        $this->dockerActionManager = $dockerActionManager;
     }
 
     public function GetIdentifier() : string {
@@ -71,6 +56,26 @@ class Container {
         return $this->restartPolicy;
     }
 
+    public function GetImageTag() : string {
+        return $this->imageTag;
+    }
+
+    public function GetReadOnlySetting() : bool {
+        return $this->readOnlyRootFs;
+    }
+
+    public function GetInit() : bool {
+        return $this->init;
+    }
+
+    public function GetShmSize() : int {
+        return $this->shmSize;
+    }
+
+    public function isApparmorUnconfined() : bool {
+        return $this->apparmorUnconfined;
+    }
+
     public function GetMaxShutdownTime() : int {
         return $this->maxShutdownTime;
     }
@@ -79,8 +84,20 @@ class Container {
         return $this->secrets;
     }
 
+    public function GetTmpfs() : array {
+        return $this->tmpfs;
+    }
+
     public function GetDevices() : array {
         return $this->devices;
+    }
+
+    public function GetCapAdds() : array {
+        return $this->capAdd;
+    }
+
+    public function GetBackupVolumes() : array {
+        return $this->backupVolumes;
     }
 
     public function GetPorts() : ContainerPorts {
@@ -95,19 +112,19 @@ class Container {
         return $this->volumes;
     }
 
-    public function GetRunningState() : IContainerState {
+    public function GetRunningState() : ContainerState {
         return $this->dockerActionManager->GetContainerRunningState($this);
     }
 
-    public function GetRestartingState() : IContainerState {
+    public function GetRestartingState() : ContainerState {
         return $this->dockerActionManager->GetContainerRestartingState($this);
     }
 
-    public function GetUpdateState() : IContainerState {
+    public function GetUpdateState() : VersionState {
         return $this->dockerActionManager->GetContainerUpdateState($this);
     }
 
-    public function GetStartingState() : IContainerState {
+    public function GetStartingState() : ContainerState {
         return $this->dockerActionManager->GetContainerStartingState($this);
     }
 
@@ -118,7 +135,19 @@ class Container {
         return $this->dependsOn;
     }
 
+    public function GetNextcloudExecCommands() : array {
+        return $this->nextcloudExecCommands;
+    }
+
     public function GetEnvironmentVariables() : ContainerEnvironmentVariables {
         return $this->containerEnvironmentVariables;
+    }
+
+    public function GetAioVariables() : AioVariables {
+        return $this->aioVariables;
+    }
+
+    public function GetDocumentation() : string {
+        return $this->documentation;
     }
 }

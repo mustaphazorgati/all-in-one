@@ -3,20 +3,24 @@ name: PHP Deprecation Detector
 
 on:
   pull_request:
+    paths:
+      - 'php/**'
   push:
     branches:
       - main
+    paths:
+      - 'php/**'
 
 jobs:
-  psalm:
+  phpdd:
     name: PHP Deprecation Detector
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up php8.1
+      - uses: actions/checkout@v4
+      - name: Set up php
         uses: shivammathur/setup-php@v2
         with:
-          php-version: 8.1
+          php-version: 8.3
           extensions: apcu
           coverage: none
 
@@ -24,6 +28,8 @@ jobs:
         run: |
           set -x
           cd php
-          composer global require wapmorgan/php-deprecation-detector dev-master
           composer install
-          composer run php-deprecation-detector
+          composer run php-deprecation-detector | tee -i ./phpdd.log
+          if grep "Total issues:" ./phpdd.log; then
+            exit 1
+          fi

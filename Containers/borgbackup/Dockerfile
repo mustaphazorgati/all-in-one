@@ -1,8 +1,11 @@
-FROM alpine:3.17.2
+# syntax=docker/dockerfile:latest
+FROM alpine:3.20.3
 
 RUN set -ex; \
     \
+    apk upgrade --no-cache -a; \
     apk add --no-cache \
+        util-linux-misc \
         bash \
         borgbackup \
         rsync \
@@ -12,11 +15,11 @@ RUN set -ex; \
 
 VOLUME /root
 
-COPY start.sh /usr/bin/
-COPY backupscript.sh /
-RUN chmod +x /usr/bin/start.sh; \
-    chmod +x /backupscript.sh
+COPY --chmod=770 *.sh /
 
+ENTRYPOINT ["/start.sh"]
+# hadolint ignore=DL3002
 USER root
-ENTRYPOINT ["start.sh"]
-LABEL com.centurylinklabs.watchtower.monitor-only="true"
+
+LABEL com.centurylinklabs.watchtower.enable="false"
+ENV BORG_RETENTION_POLICY="--keep-within=7d --keep-weekly=4 --keep-monthly=6"

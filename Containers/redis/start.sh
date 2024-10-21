@@ -7,10 +7,11 @@ if [ "$(sysctl -n vm.overcommit_memory)" != "1" ]; then
 fi
 
 # Run redis with a password if provided
+echo "Redis has started"
 if [ -n "$REDIS_HOST_PASSWORD" ]; then
-    exec redis-server --requirepass "$REDIS_HOST_PASSWORD"
+    exec redis-server --requirepass "$REDIS_HOST_PASSWORD" --loglevel warning
 else
-    exec redis-server
+    exec redis-server --loglevel warning
 fi
 
 exec "$@"

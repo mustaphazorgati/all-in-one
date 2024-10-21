@@ -6,6 +6,12 @@ print_green() {
     printf "%b%s%b\n" "\e[0;92m" "$TEXT" "\e[0m"
 }
 
+# Function to show text in red
+print_red() {
+    local TEXT="$1"
+    printf "%b%s%b\n" "\e[0;31m" "$TEXT" "\e[0m"
+}
+
 # Function to check if number was provided
 check_if_number() {
 case "${1}" in
@@ -14,18 +20,34 @@ case "${1}" in
 esac
 }
 
+# Check if running as root user
+if [ "$EUID" != "0" ]; then
+    print_red "Container does not run as root user. This is not supported."
+    exit 1
+fi
+
+# Check that the CMD is not overwritten nor set
+if [ "$*" != "" ]; then
+    print_red "Docker run command for AIO is incorrect as a CMD option was given which is not expected."
+    exit 1
+fi
+
 # Check if socket is available and readable
 if ! [ -a "/var/run/docker.sock" ]; then
-    echo "Docker socket is not available. Cannot continue."
+    print_red "Docker socket is not available. Cannot continue."
+    echo "Please make sure to mount the docker socket into /var/run/docker.sock inside the container!"
+    echo "If you did this by purpose because you don't want the container to have access to the docker socket, see https://github.com/nextcloud/all-in-one/tree/main/manual-install."
     exit 1
 elif ! mountpoint -q "/mnt/docker-aio-config"; then
-    echo "/mnt/docker-aio-config is not a mountpoint. Cannot proceed!"
+    print_red "/mnt/docker-aio-config is not a mountpoint. Cannot proceed!"
+    echo "Please make sure to mount the nextcloud_aio_mastercontainer docker volume into /mnt/docker-aio-config inside the container!"
+    echo "If you are on TrueNas SCALE, see https://github.com/nextcloud/all-in-one#can-i-run-aio-on-truenas-scale"
     exit 1
 elif ! sudo -u www-data test -r /var/run/docker.sock; then
     echo "Trying to fix docker.sock permissions internally..."
     DOCKER_GROUP=$(stat -c '%G' /var/run/docker.sock)
     DOCKER_GROUP_ID=$(stat -c '%g' /var/run/docker.sock)
-    # Check if a group with the same group id of /var/run/docker.socket already exists in the container
+    # Check if a group with the same group name of /var/run/docker.socket already exists in the container
     if grep -q "^$DOCKER_GROUP:" /etc/group; then
         # If yes, add www-data to that group
         echo "Adding internal www-data to group $DOCKER_GROUP"
@@ -40,24 +62,27 @@ elif ! sudo -u www-data test -r /var/run/docker.sock; then
         usermod -aG docker www-data
     fi
     if ! sudo -u www-data test -r /var/run/docker.sock; then
-        echo "Docker socket is not readable by the www-data user. Cannot continue."
+        print_red "Docker socket is not readable by the www-data user. Cannot continue."
         exit 1
     fi
 fi
 
 # Check if api version is supported
 if ! sudo -u www-data docker info &>/dev/null; then
-    echo "Cannot connect to the docker socket. Cannot proceed."
+    print_red "Cannot connect to the docker socket. Cannot proceed."
+    echo "Did you maybe remove group read permissions for the docker socket? AIO needs them in order to access the docker socket."
+    echo "If SELinux is enabled on your host, see https://github.com/nextcloud/all-in-one#are-there-known-problems-when-selinux-is-enabled"
+    echo "If you are on TrueNas SCALE, see https://github.com/nextcloud/all-in-one#can-i-run-aio-on-truenas-scale"
     exit 1
 fi
 API_VERSION_FILE="$(find ./ -name DockerActionManager.php | head -1)"
-API_VERSION="$(grep -oP 'const API_VERSION.*\;' "$API_VERSION_FILE" | grep -oP '[0-9]+.[0-9]+' | head -1)"
+API_VERSION="$(grep -oP 'const string API_VERSION.*\;' "$API_VERSION_FILE" | grep -oP '[0-9]+.[0-9]+' | head -1)"
 # shellcheck disable=SC2001
 API_VERSION_NUMB="$(echo "$API_VERSION" | sed 's/\.//')"
 LOCAL_API_VERSION_NUMB="$(sudo -u www-data docker version | grep -i "api version" | grep -oP '[0-9]+.[0-9]+' | head -1 | sed 's/\.//')"
 if [ -n "$LOCAL_API_VERSION_NUMB" ] && [ -n "$API_VERSION_NUMB" ]; then
     if ! [ "$LOCAL_API_VERSION_NUMB" -ge "$API_VERSION_NUMB" ]; then
-        echo "Docker API v$API_VERSION is not supported by your docker engine. Cannot proceed. Please upgrade your docker engine if you want to run Nextcloud AIO!"
+        print_red "Docker API v$API_VERSION is not supported by your docker engine. Cannot proceed. Please upgrade your docker engine if you want to run Nextcloud AIO!"
         exit 1
     fi
 else
@@ -66,58 +91,70 @@ else
 fi
 
 # Check Storage drivers
-STORAGE_DRIVER="$(docker info | grep "Storage Driver")"
+STORAGE_DRIVER="$(sudo -u www-data docker info | grep "Storage Driver")"
 # Check if vfs is used: https://github.com/nextcloud/all-in-one/discussions/1467
 if echo "$STORAGE_DRIVER" | grep -q vfs; then
     echo "$STORAGE_DRIVER"
-    echo "Warning: It seems like the storage driver vfs is used. This will lead to problems with disk space and performance and is disrecommended!"
+    print_red "Warning: It seems like the storage driver vfs is used. This will lead to problems with disk space and performance and is disrecommended!"
 elif echo "$STORAGE_DRIVER" | grep -q fuse-overlayfs; then
     echo "$STORAGE_DRIVER"
-    echo "Warning: It seems like the storage driver fuse-overlayfs is used. Please check if you can switch to overlay2 instead."
+    print_red "Warning: It seems like the storage driver fuse-overlayfs is used. Please check if you can switch to overlay2 instead."
+fi
+
+# Check if snap install
+if sudo -u www-data docker info | grep "Docker Root Dir" | grep "/var/snap/docker/"; then
+    print_red "Warning: It looks like your installation uses docker installed via snap."
+    print_red "This comes with some limitations and is disrecommended by the docker maintainers."
+    print_red "See for example https://github.com/nextcloud/all-in-one/discussions/4890#discussioncomment-10386752"
 fi
 
 # Check if startup command was executed correctly
-if ! sudo -u www-data docker ps | grep -q "nextcloud-aio-mastercontainer"; then
-    echo "It seems like you did not give the mastercontainer the correct name?
-Using a different name is not supported!"
+if ! sudo -u www-data docker ps --format "{{.Names}}" | grep -q "^nextcloud-aio-mastercontainer$"; then
+    print_red "It seems like you did not give the mastercontainer the correct name? (The 'nextcloud-aio-mastercontainer' container was not found.)
+Using a different name is not supported since mastercontainer updates will not work in that case!
+If you are on docker swarm and try to run AIO, see https://github.com/nextcloud/all-in-one#can-i-run-this-with-docker-swarm"
     exit 1
-elif ! sudo -u www-data docker volume ls | grep -q "nextcloud_aio_mastercontainer"; then
-    echo "It seems like you did not give the mastercontainer volume the correct name?
-Using a different name is not supported!"
+elif ! sudo -u www-data docker volume ls --format "{{.Name}}" | grep -q "^nextcloud_aio_mastercontainer$"; then
+    print_red "It seems like you did not give the mastercontainer volume the correct name? (The 'nextcloud_aio_mastercontainer' volume was not found.)
+Using a different name is not supported since the built-in backup solution will not work in that case!"
+    exit 1
+elif ! sudo -u www-data docker inspect nextcloud-aio-mastercontainer | grep -q "nextcloud_aio_mastercontainer"; then
+    print_red "It seems like you did not attach the 'nextcloud_aio_mastercontainer' volume to the mastercontainer?
+This is not supported since the built-in backup solution will not work in that case!"
     exit 1
 fi
 
 # Check for other options
 if [ -n "$NEXTCLOUD_DATADIR" ]; then
     if [ "$NEXTCLOUD_DATADIR" = "nextcloud_aio_nextcloud_datadir" ]; then
-        echo "NEXTCLOUD_DATADIR is set to $NEXTCLOUD_DATADIR"
+        sleep 1
     elif ! echo "$NEXTCLOUD_DATADIR" | grep -q "^/" || [ "$NEXTCLOUD_DATADIR" = "/" ]; then
-        echo "You've set NEXTCLOUD_DATADIR but not to an allowed value.
-The string must start with '/' and must not be equal to '/'.
+        print_red "You've set NEXTCLOUD_DATADIR but not to an allowed value.
+The string must start with '/' and must not be equal to '/'. Also allowed is 'nextcloud_aio_nextcloud_datadir'.
 It is set to '$NEXTCLOUD_DATADIR'."
         exit 1
     fi
 fi
 if [ -n "$NEXTCLOUD_MOUNT" ]; then
     if ! echo "$NEXTCLOUD_MOUNT" | grep -q "^/" || [ "$NEXTCLOUD_MOUNT" = "/" ]; then
-        echo "You've set NEXCLOUD_MOUNT but not to an allowed value.
+        print_red "You've set NEXCLOUD_MOUNT but not to an allowed value.
 The string must start with '/' and must not be equal to '/'.
 It is set to '$NEXTCLOUD_MOUNT'."
         exit 1
     elif [ "$NEXTCLOUD_MOUNT" = "/mnt/ncdata" ] || echo "$NEXTCLOUD_MOUNT" | grep -q "^/mnt/ncdata/"; then
-        echo "'/mnt/ncdata' and '/mnt/ncdata/' are not allowed as values for NEXTCLOUD_MOUNT."
+        print_red "'/mnt/ncdata' and '/mnt/ncdata/' are not allowed as values for NEXTCLOUD_MOUNT."
         exit 1
     fi
 fi
 if [ -n "$NEXTCLOUD_DATADIR" ] && [ -n "$NEXTCLOUD_MOUNT" ]; then
     if [ "$NEXTCLOUD_DATADIR" = "$NEXTCLOUD_MOUNT" ]; then
-        echo "NEXTCLOUD_DATADIR and NEXTCLOUD_MOUNT are not allowed to be equal."
+        print_red "NEXTCLOUD_DATADIR and NEXTCLOUD_MOUNT are not allowed to be equal."
         exit 1
     fi
 fi
 if [ -n "$NEXTCLOUD_UPLOAD_LIMIT" ]; then
     if ! echo "$NEXTCLOUD_UPLOAD_LIMIT" | grep -q '^[0-9]\+G$'; then
-        echo "You've set NEXTCLOUD_UPLOAD_LIMIT but not to an allowed value.
+        print_red "You've set NEXTCLOUD_UPLOAD_LIMIT but not to an allowed value.
 The string must start with a number and end with 'G'.
 It is set to '$NEXTCLOUD_UPLOAD_LIMIT'."
         exit 1
@@ -125,7 +162,7 @@ It is set to '$NEXTCLOUD_UPLOAD_LIMIT'."
 fi
 if [ -n "$NEXTCLOUD_MAX_TIME" ]; then
     if ! echo "$NEXTCLOUD_MAX_TIME" | grep -q '^[0-9]\+$'; then
-        echo "You've set NEXTCLOUD_MAX_TIME but not to an allowed value.
+        print_red "You've set NEXTCLOUD_MAX_TIME but not to an allowed value.
 The string must be a number. E.g. '3600'.
 It is set to '$NEXTCLOUD_MAX_TIME'."
         exit 1
@@ -133,7 +170,7 @@ It is set to '$NEXTCLOUD_MAX_TIME'."
 fi
 if [ -n "$NEXTCLOUD_MEMORY_LIMIT" ]; then
     if ! echo "$NEXTCLOUD_MEMORY_LIMIT" | grep -q '^[0-9]\+M$'; then
-        echo "You've set NEXTCLOUD_MEMORY_LIMIT but not to an allowed value.
+        print_red "You've set NEXTCLOUD_MEMORY_LIMIT but not to an allowed value.
 The string must start with a number and end with 'M'.
 It is set to '$NEXTCLOUD_MEMORY_LIMIT'."
         exit 1
@@ -141,64 +178,64 @@ It is set to '$NEXTCLOUD_MEMORY_LIMIT'."
 fi
 if [ -n "$APACHE_PORT" ]; then
     if ! check_if_number "$APACHE_PORT"; then
-        echo "You provided an Apache port but did not only use numbers.
+        print_red "You provided an Apache port but did not only use numbers.
 It is set to '$APACHE_PORT'."
         exit 1
     elif ! [ "$APACHE_PORT" -le 65535 ] || ! [ "$APACHE_PORT" -ge 1 ]; then
-        echo "The provided Apache port is invalid. It must be between 1 and 65535"
+        print_red "The provided Apache port is invalid. It must be between 1 and 65535"
         exit 1
     fi
 fi
 if [ -n "$APACHE_IP_BINDING" ]; then
-    if ! echo "$APACHE_IP_BINDING" | grep -q '^[0-9.]\+$'; then
-        echo "You provided an ip-address for the apache container's ip-binding but it was not a valid ip-address.
+    if ! echo "$APACHE_IP_BINDING" | grep -q '^[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+$\|^[0-9a-f:]\+$\|^@INTERNAL$'; then
+        print_red "You provided an ip-address for the apache container's ip-binding but it was not a valid ip-address.
 It is set to '$APACHE_IP_BINDING'."
         exit 1
     fi
 fi
 if [ -n "$TALK_PORT" ]; then
     if ! check_if_number "$TALK_PORT"; then
-        echo "You provided an Talk port but did not only use numbers.
+        print_red "You provided an Talk port but did not only use numbers.
 It is set to '$TALK_PORT'."
         exit 1
     elif ! [ "$TALK_PORT" -le 65535 ] || ! [ "$TALK_PORT" -ge 1 ]; then
-        echo "The provided Talk port is invalid. It must be between 1 and 65535"
+        print_red "The provided Talk port is invalid. It must be between 1 and 65535"
         exit 1
     fi
 fi
 if [ -n "$APACHE_PORT" ] && [ -n "$TALK_PORT" ]; then
     if [ "$APACHE_PORT" = "$TALK_PORT" ]; then
-        echo "APACHE_PORT and TALK_PORT are not allowed to be equal."
+        print_red "APACHE_PORT and TALK_PORT are not allowed to be equal."
         exit 1
     fi
 fi
-if [ -n "$DOCKER_SOCKET_PATH" ]; then
-    if ! echo "$DOCKER_SOCKET_PATH" | grep -q "^/" || echo "$DOCKER_SOCKET_PATH" | grep -q "/$"; then
-        echo "You've set DOCKER_SOCKET_PATH but not to an allowed value.
+if [ -n "$WATCHTOWER_DOCKER_SOCKET_PATH" ]; then
+    if ! echo "$WATCHTOWER_DOCKER_SOCKET_PATH" | grep -q "^/" || echo "$WATCHTOWER_DOCKER_SOCKET_PATH" | grep -q "/$"; then
+        print_red "You've set WATCHTOWER_DOCKER_SOCKET_PATH but not to an allowed value.
 The string must start with '/' and must not end with '/'.
-It is set to '$DOCKER_SOCKET_PATH'."
+It is set to '$WATCHTOWER_DOCKER_SOCKET_PATH'."
         exit 1
     fi
 fi
 if [ -n "$NEXTCLOUD_TRUSTED_CACERTS_DIR" ]; then
     if ! echo "$NEXTCLOUD_TRUSTED_CACERTS_DIR" | grep -q "^/" || echo "$NEXTCLOUD_TRUSTED_CACERTS_DIR" | grep -q "/$"; then
-        echo "You've set NEXTCLOUD_TRUSTED_CACERTS_DIR but not to an allowed value.
+        print_red "You've set NEXTCLOUD_TRUSTED_CACERTS_DIR but not to an allowed value.
 It should be an absolute path to a directory that starts with '/' but not end with '/'.
 It is set to '$NEXTCLOUD_TRUSTED_CACERTS_DIR '."
         exit 1
     fi
 fi
 if [ -n "$NEXTCLOUD_STARTUP_APPS" ]; then
-    if ! echo "$NEXTCLOUD_STARTUP_APPS" | grep -q "^[a-z _-]\+$"; then
-        echo "You've set NEXTCLOUD_STARTUP_APPS but not to an allowed value.
-It needs to be a string. Allowed are small letters a-z, spaces, hyphens and '_'.
+    if ! echo "$NEXTCLOUD_STARTUP_APPS" | grep -q "^[a-z0-9 _-]\+$"; then
+        print_red "You've set NEXTCLOUD_STARTUP_APPS but not to an allowed value.
+It needs to be a string. Allowed are small letters a-z, 0-9, spaces, hyphens and '_'.
 It is set to '$NEXTCLOUD_STARTUP_APPS'."
         exit 1
     fi
 fi
 if [ -n "$NEXTCLOUD_ADDITIONAL_APKS" ]; then
     if ! echo "$NEXTCLOUD_ADDITIONAL_APKS" | grep -q "^[a-z0-9 ._-]\+$"; then
-        echo "You've set NEXTCLOUD_ADDITIONAL_APKS but not to an allowed value.
+        print_red "You've set NEXTCLOUD_ADDITIONAL_APKS but not to an allowed value.
 It needs to be a string. Allowed are small letters a-z, digits 0-9, spaces, hyphens, dots and '_'.
 It is set to '$NEXTCLOUD_ADDITIONAL_APKS'."
         exit 1
@@ -206,9 +243,23 @@ It is set to '$NEXTCLOUD_ADDITIONAL_APKS'."
 fi
 if [ -n "$NEXTCLOUD_ADDITIONAL_PHP_EXTENSIONS" ]; then
     if ! echo "$NEXTCLOUD_ADDITIONAL_PHP_EXTENSIONS" | grep -q "^[a-z0-9 ._-]\+$"; then
-        echo "You've set NEXTCLOUD_ADDITIONAL_PHP_EXTENSIONS but not to an allowed value.
+        print_red "You've set NEXTCLOUD_ADDITIONAL_PHP_EXTENSIONS but not to an allowed value.
 It needs to be a string. Allowed are small letters a-z, digits 0-9, spaces, hyphens, dots and '_'.
 It is set to '$NEXTCLOUD_ADDITIONAL_PHP_EXTENSIONS'."
+        exit 1
+    fi
+fi
+if [ -n "$AIO_COMMUNITY_CONTAINERS" ]; then
+    read -ra AIO_CCONTAINERS <<< "$AIO_COMMUNITY_CONTAINERS"
+    for container in "${AIO_CCONTAINERS[@]}"; do
+        if ! [ -d "/var/www/docker-aio/community-containers/$container" ]; then
+            print_red "The community container $container was not found!"
+            FAIL_CCONTAINERS=1
+        fi
+    done
+    if [ -n "$FAIL_CCONTAINERS" ]; then
+        print_red "You've set AIO_COMMUNITY_CONTAINERS but at least one container was not found.
+It is set to '$AIO_COMMUNITY_CONTAINERS'."
         exit 1
     fi
 fi
@@ -217,10 +268,40 @@ fi
 # Prevents issues like https://github.com/nextcloud/all-in-one/discussions/565
 curl https://nextcloud.com &>/dev/null
 if [ "$?" = 6 ]; then
-    echo "Could not resolve the host nextcloud.com."
+    print_red "Could not resolve the host nextcloud.com."
     echo "Most likely the DNS resolving does not work."
-    echo "You should be able to fix this by adding the '--dns=\"ip.address.of.dns.server\"' option to the docker run command."
+    echo "You should be able to fix this by following https://dockerlabs.collabnix.com/intermediate/networking/Configuring_DNS.html"
+    echo "Apart from that, there has been this: https://github.com/nextcloud/all-in-one/discussions/2065"
     exit 1
+fi
+
+# Check that no changes have been made to timezone settings since AIO only supports running in Etc/UTC timezone
+if [ -n "$TZ" ]; then
+    print_red "The environmental variable TZ has been set which is not supported by AIO since it only supports running in the default Etc/UTC timezone!"
+    echo "The correct timezone can be set in the AIO interface later on!"
+    # Disable exit since it seems to be by default set on unraid and we dont want to break these instances
+    # exit 1
+fi
+if mountpoint -q /etc/localtime; then
+    print_red "/etc/localtime has been mounted into the container which is not allowed because AIO only supports running in the default Etc/UTC timezone!"
+    echo "The correct timezone can be set in the AIO interface later on!"
+    exit 1
+fi
+if mountpoint -q /etc/timezone; then
+    print_red "/etc/timezone has been mounted into the container which is not allowed because AIO only supports running in the default Etc/UTC timezone!"
+    echo "The correct timezone can be set in the AIO interface later on!"
+    exit 1
+fi
+
+# Check if unsupported env are set (but don't exit as it would break many instances)
+if [ -n "$APACHE_DISABLE_REWRITE_IP" ]; then
+    print_red "The environmental variable APACHE_DISABLE_REWRITE_IP has been set which is not supported by AIO. Please remove it!"
+fi
+if [ -n "$NEXTCLOUD_TRUSTED_DOMAINS" ]; then
+    print_red "The environmental variable NEXTCLOUD_TRUSTED_DOMAINS has been set which is not supported by AIO. Please remove it!"
+fi
+if [ -n "$TRUSTED_PROXIES" ]; then
+    print_red "The environmental variable TRUSTED_PROXIES has been set which is not supported by AIO. Please remove it!"
 fi
 
 # Add important folders
@@ -267,15 +348,16 @@ if [ -f ./ssl.crt ] && [ -f ./ssl.key ]; then
     cp "$GENERATED_CERTS/ssl.key" ./
 fi
 
-print_green "Initial startup of Nextcloud All In One complete!
+print_green "Initial startup of Nextcloud All-in-One complete!
 You should be able to open the Nextcloud AIO Interface now on port 8080 of this server!
 E.g. https://internal.ip.of.this.server:8080
+⚠️ Important: do always use an ip-address if you access this port and not a domain as HSTS might block access to it later!
 
 If your server has port 80 and 8443 open and you point a domain to your server, you can get a valid certificate automatically by opening the Nextcloud AIO Interface via:
 https://your-domain-that-points-to-this-server.tld:8443"
 
-# Set the timezone to UTC
-export TZ=UTC
+# Set the timezone to Etc/UTC
+export TZ=Etc/UTC
 
 # Fix apache startup
 rm -f /var/run/apache2/httpd.pid
@@ -286,4 +368,5 @@ caddy fmt --overwrite /Caddyfile
 # Fix caddy log 
 chmod 777 /root
 
-exec "$@"
+# Start supervisord
+/usr/bin/supervisord -c /supervisord.conf

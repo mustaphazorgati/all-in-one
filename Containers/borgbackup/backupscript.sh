@@ -24,22 +24,30 @@ for directory in "${VOLUME_DIRS[@]}"; do
         exit 1
     fi
 done
+# Test if default volumes are there
+DEFAULT_VOLUMES=(nextcloud_aio_apache nextcloud_aio_nextcloud nextcloud_aio_database nextcloud_aio_database_dump nextcloud_aio_elasticsearch nextcloud_aio_nextcloud_data nextcloud_aio_mastercontainer)
+for volume in "${DEFAULT_VOLUMES[@]}"; do
+    if ! mountpoint -q "/nextcloud_aio_volumes/$volume"; then
+        echo "$volume is missing which is not intended."
+        exit 1
+    fi
+done
 
 # Check if target is mountpoint
 if ! mountpoint -q /mnt/borgbackup; then
-    echo "/mnt/borgbackup is not a mountpoint which is not allowed"
+    echo "/mnt/borgbackup is not a mountpoint which is not allowed."
     exit 1
 fi
 
 # Check if target is empty
 if [ "$BORG_MODE" != backup ] && [ "$BORG_MODE" != test ] && ! [ -f "$BORG_BACKUP_DIRECTORY/config" ]; then
-    echo "The repository is empty. cannot perform check or restore."
+    echo "The repository is empty. Cannot perform check or restore."
     exit 1
 fi
 
 # Do not continue if this file exists (needed for simple external blocking)
 if [ -f "$BORG_BACKUP_DIRECTORY/aio-lockfile" ]; then
-    echo "Not continuing because aio-lockfile exists - it seems like a script is externally running which is locking the backup archive."
+    echo "Not continuing because aio-lockfile exists – it seems like a script is externally running which is locking the backup archive."
     echo "If this should not be the case, you can fix this by deleting the 'aio-lockfile' file from the backup archive directory."
     exit 1
 fi
@@ -57,25 +65,38 @@ if [ "$BORG_MODE" = backup ]; then
         echo "configuration.json not present. Cannot perform the backup!"
         exit 1
     elif ! [ -f "/nextcloud_aio_volumes/nextcloud_aio_nextcloud/config/config.php" ]; then
-        echo "config.php is missing cannot perform backup"
+        echo "config.php is missing. Cannot perform backup!"
         exit 1
     elif ! [ -f "/nextcloud_aio_volumes/nextcloud_aio_database_dump/database-dump.sql" ]; then
-        echo "database-dump is missing. cannot perform backup"
+        echo "database-dump is missing. Cannot perform backup!"
+        echo "Please check the database container logs!"
+        exit 1
+    elif ! [ -f "/nextcloud_aio_volumes/nextcloud_aio_nextcloud_data/.ocdata" ] && ! [ -f "/nextcloud_aio_volumes/nextcloud_aio_nextcloud_data/.ncdata" ]; then
+        echo "The .ncdata or .ocdata file is missing in Nextcloud datadir which means it is invalid!"
+        echo "Is the drive where the datadir is located on still mounted?"
         exit 1
     fi
 
-    # Test that nothing is empty
-    for directory in "${VOLUME_DIRS[@]}"; do
-        if [ -z "$(ls -A "$directory")" ] && [ "$directory" != "/nextcloud_aio_volumes/nextcloud_aio_elasticsearch" ]; then
-            echo "$directory is empty which is not allowed."
+    # Test that default volumes are not empty
+    for volume in "${DEFAULT_VOLUMES[@]}"; do
+        if [ -z "$(ls -A "/nextcloud_aio_volumes/$volume")" ] && [ "$volume" != "nextcloud_aio_elasticsearch" ]; then
+            echo "/nextcloud_aio_volumes/$volume is empty which should not happen!"
             exit 1
         fi
     done
 
     if [ -f "/nextcloud_aio_volumes/nextcloud_aio_database_dump/export.failed" ]; then
-        echo "Database export failed the last time. Most likely was the export time not high enough."
         echo "Cannot create a backup now."
-        echo "Please report this to https://github.com/nextcloud/all-in-one/issues. Thanks!"
+        echo "Reason is that the database export failed the last time."
+        echo "Most likely was the database container not correctly shut down via the AIO interface."
+        echo ""
+        echo "You might want to try the database export again manually by running the three commands:"
+        echo "sudo docker start nextcloud-aio-database"
+        echo "sleep 10"
+        echo "sudo docker stop nextcloud-aio-database -t 1800"
+        echo ""
+        echo "Afterwards try to create a backup again and it should hopefully work."
+        echo "If it should still fail, feel free to report this to https://github.com/nextcloud/all-in-one/issues and post the database container logs and the borgbackup container logs into the thread. Thanks!"
         exit 1
     fi
 
@@ -86,13 +107,14 @@ if [ "$BORG_MODE" = backup ]; then
     if ! [ -f "$BORG_BACKUP_DIRECTORY/config" ]; then
         # Don't initialize if already initialized
         if [ -f "/nextcloud_aio_volumes/nextcloud_aio_mastercontainer/data/borg.config" ]; then
-            echo "Cannot initialize a new repository as that was already done at least one time."
-            echo "If you still want to do so, you may delete the 'borg.config' file that is stored in the mastercontainer volume manually, which will allow you to initialize a new borg repository in the chosen directory:"
+            echo "No borg config file was found in the targeted directory."
+            echo "This might happen if the targeted directory is located on an external drive and the drive not connected anymore. You should check this."
+            echo "If you instead want to initialize a new backup repository, you may delete the 'borg.config' file that is stored in the mastercontainer volume manually, which will allow you to initialize a new borg repository in the chosen directory:"
             echo "sudo docker exec nextcloud-aio-mastercontainer rm /mnt/docker-aio-config/data/borg.config"
             exit 1
         fi
 
-        echo "initializing repository..."
+        echo "Initializing repository..."
         NEW_REPOSITORY=1
         if ! borg init --debug --encryption=repokey-blake2 "$BORG_BACKUP_DIRECTORY"; then
             echo "Could not initialize borg repository."
@@ -127,15 +149,29 @@ if [ "$BORG_MODE" = backup ]; then
     # Borg options
     # auto,zstd compression seems to has the best ratio based on:
     # https://forum.level1techs.com/t/optimal-compression-for-borg-backups/145870/6
-    BORG_OPTS=(-v --stats --compression "auto,zstd" --exclude-caches --checkpoint-interval 86400)
+    BORG_OPTS=(-v --stats --compression "auto,zstd" --exclude-caches)
+    if [ "$NEW_REPOSITORY" = 1 ]; then
+        BORG_OPTS+=(--progress)
+    fi
+
+    # Exclude the nextcloud log and audit log for GDPR reasons
+    BORG_EXCLUDE=(--exclude "/nextcloud_aio_volumes/nextcloud_aio_nextcloud/data/nextcloud.log*" --exclude "/nextcloud_aio_volumes/nextcloud_aio_nextcloud/data/audit.log")
+
+    # Make sure that there is always a borg.config file before creating a new backup
+    if ! [ -f "/nextcloud_aio_volumes/nextcloud_aio_mastercontainer/data/borg.config" ]; then
+        echo "Did not find borg.config file in the mastercontainer volume."
+        echo "Cannot create a backup as this is wrong."
+        exit 1
+    fi
 
     # Create the backup
     echo "Starting the backup..."
     get_start_time
-    if ! borg create "${BORG_OPTS[@]}" "$BORG_BACKUP_DIRECTORY::$CURRENT_DATE-nextcloud-aio" "/nextcloud_aio_volumes/"; then
+    if ! borg create "${BORG_OPTS[@]}" "${BORG_EXCLUDE[@]}" "$BORG_BACKUP_DIRECTORY::$CURRENT_DATE-nextcloud-aio" "/nextcloud_aio_volumes/"; then
         echo "Deleting the failed backup archive..."
         borg delete --stats "$BORG_BACKUP_DIRECTORY::$CURRENT_DATE-nextcloud-aio"
         echo "Backup failed!"
+        echo "You might want to check the backup integrity via the AIO interface."
         if [ "$NEW_REPOSITORY" = 1 ]; then
             echo "Deleting borg.config file so that you can choose a different location for the backup."
             rm "/nextcloud_aio_volumes/nextcloud_aio_mastercontainer/data/borg.config"
@@ -147,11 +183,12 @@ if [ "$BORG_MODE" = backup ]; then
     rm -f "/nextcloud_aio_volumes/nextcloud_aio_nextcloud_data/skip.update"
 
     # Prune options
-    BORG_PRUNE_OPTS=(--stats --keep-within=7d --keep-weekly=4 --keep-monthly=6 "$BORG_BACKUP_DIRECTORY")
+    read -ra BORG_PRUNE_OPTS <<< "$BORG_RETENTION_POLICY"
+    echo "BORG_PRUNE_OPTS are ${BORG_PRUNE_OPTS[*]}"
 
     # Prune archives
     echo "Pruning the archives..."
-    if ! borg prune --glob-archives '*_*-nextcloud-aio' "${BORG_PRUNE_OPTS[@]}"; then
+    if ! borg prune --stats --glob-archives '*_*-nextcloud-aio' "${BORG_PRUNE_OPTS[@]}" "$BORG_BACKUP_DIRECTORY"; then
         echo "Failed to prune archives!"
         exit 1
     fi
@@ -182,13 +219,13 @@ if [ "$BORG_MODE" = backup ]; then
                 exit 1
             fi
             echo "Pruning additional volumes..."
-            if ! borg prune --glob-archives '*_*-additional-docker-volumes' "${BORG_PRUNE_OPTS[@]}"; then
+            if ! borg prune --stats --glob-archives '*_*-additional-docker-volumes' "${BORG_PRUNE_OPTS[@]}" "$BORG_BACKUP_DIRECTORY"; then
                 echo "Failed to prune additional docker-volumes archives!"
                 exit 1
             fi
             echo "Compacting additional volumes..."
             if ! borg compact "$BORG_BACKUP_DIRECTORY"; then
-                echo "Failed to compact archives!"
+                echo "Failed to compact additional docker-volume archives!"
                 exit 1
             fi
         fi
@@ -212,13 +249,13 @@ if [ "$BORG_MODE" = backup ]; then
                 exit 1
             fi
             echo "Pruning additional host mounts..."
-            if ! borg prune --glob-archives '*_*-additional-host-mounts' "${BORG_PRUNE_OPTS[@]}"; then
+            if ! borg prune --stats --glob-archives '*_*-additional-host-mounts' "${BORG_PRUNE_OPTS[@]}" "$BORG_BACKUP_DIRECTORY"; then
                 echo "Failed to prune additional host-mount archives!"
                 exit 1
             fi
             echo "Compacting additional host mounts..."
             if ! borg compact "$BORG_BACKUP_DIRECTORY"; then
-                echo "Failed to compact archives!"
+                echo "Failed to compact additional host-mount archives!"
                 exit 1
             fi
         fi
@@ -226,7 +263,7 @@ if [ "$BORG_MODE" = backup ]; then
 
     # Inform user
     get_expiration_time
-    echo "Backup finished successfully on $END_DATE_READABLE ($DURATION_READABLE)"
+    echo "Backup finished successfully on $END_DATE_READABLE ($DURATION_READABLE)."
     if [ -f "/nextcloud_aio_volumes/nextcloud_aio_nextcloud_data/update.failed" ]; then
         echo "However a Nextcloud update failed. So reporting that the backup failed which will skip any update attempt the next time."
         echo "Please restore a backup from before the failed Nextcloud update attempt."
@@ -264,14 +301,16 @@ if [ "$BORG_MODE" = restore ]; then
 
     # Restore everything except the configuration file
     if ! rsync --stats --archive --human-readable -vv --delete \
-    --exclude "nextcloud_aio_apache/caddy/"** \
-    --exclude "nextcloud_aio_mastercontainer/caddy/"** \
-    --exclude "nextcloud_aio_mastercontainer/certs/"** \
+    --exclude "nextcloud_aio_apache/caddy/**" \
+    --exclude "nextcloud_aio_mastercontainer/caddy/**" \
+    --exclude "nextcloud_aio_nextcloud/data/nextcloud.log*" \
+    --exclude "nextcloud_aio_nextcloud/data/audit.log" \
+    --exclude "nextcloud_aio_mastercontainer/certs/**" \
     --exclude "nextcloud_aio_mastercontainer/data/configuration.json" \
     --exclude "nextcloud_aio_mastercontainer/data/daily_backup_running" \
     --exclude "nextcloud_aio_mastercontainer/data/session_date_file" \
-    --exclude "nextcloud_aio_mastercontainer/session/"** \
-    /tmp/borg/nextcloud_aio_volumes/ /nextcloud_aio_volumes; then
+    --exclude "nextcloud_aio_mastercontainer/session/**" \
+    /tmp/borg/nextcloud_aio_volumes/ /nextcloud_aio_volumes/; then
         RESTORE_FAILED=1
         echo "Something failed while restoring from backup."
     fi
@@ -335,7 +374,7 @@ if [ "$BORG_MODE" = restore ]; then
 
     # Inform user
     get_expiration_time
-    echo "Restore finished successfully on $END_DATE_READABLE ($DURATION_READABLE)"
+    echo "Restore finished successfully on $END_DATE_READABLE ($DURATION_READABLE)."
 
     # Add file to Nextcloud container so that it skips any update the next time
     touch "/nextcloud_aio_volumes/nextcloud_aio_nextcloud_data/skip.update"
@@ -357,12 +396,13 @@ if [ "$BORG_MODE" = check ]; then
     # Perform the check
     if ! borg check -v --verify-data "$BORG_BACKUP_DIRECTORY"; then
         echo "Some errors were found while checking the backup integrity!"
+        echo "Check the AIO interface for advices on how to proceed now!"
         exit 1
     fi
 
     # Inform user
     get_expiration_time
-    echo "Check finished successfully on $END_DATE_READABLE ($DURATION_READABLE)"
+    echo "Check finished successfully on $END_DATE_READABLE ($DURATION_READABLE)."
     exit 0
 fi
 
@@ -379,7 +419,7 @@ if [ "$BORG_MODE" = "check-repair" ]; then
 
     # Inform user
     get_expiration_time
-    echo "Check finished successfully on $END_DATE_READABLE ($DURATION_READABLE)"
+    echo "Check finished successfully on $END_DATE_READABLE ($DURATION_READABLE)."
     exit 0
 fi
 
